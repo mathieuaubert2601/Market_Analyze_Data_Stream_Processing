@@ -1,0 +1,11 @@
+kafka-python
+yfinance
+chromadb
+sentence-transformers
+streamlit
+groq
+python-dotenv
+pandas
+plotly          
+vaderSentiment   
+watchdog
