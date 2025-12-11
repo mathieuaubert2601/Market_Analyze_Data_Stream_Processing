@@ -1,25 +1,32 @@
 import streamlit as st
 import yfinance as yf
+import pandas as pd
 import plotly.graph_objects as go
+import os
 from rag_engine import get_answer
-from src.config import TICKERS
+from src.config import TICKERS, HISTORY_PATH # On a besoin du chemin
 
 st.set_page_config(page_title="Market Analyst AI", page_icon="📈", layout="wide")
-st.title("📈 Smart Financial Dashboard (RAG + VIZ)")
+st.title("📈 Smart Dashboard (Full Kafka Architecture)")
 
-# --- 1. FONCTIONS D'AFFICHAGE (Graphiques & Sidebar) ---
-
+# --- FONCTION GRAPHIQUE (SOURCE : FICHIERS LOCAUX) ---
 def display_stock_chart(ticker):
-    """Affiche un graphique interactif (Bougies) avec Plotly"""
+    """Lit le CSV généré par Kafka/Consumer et affiche le graphique"""
+    csv_file = os.path.join(HISTORY_PATH, f"{ticker}.csv")
+    
+    if not os.path.exists(csv_file):
+        st.warning(f"⏳ Données pour {ticker} en cours d'arrivée via Kafka... (Attendez quelques secondes)")
+        return
+
     try:
-        # On récupère un peu plus d'historique pour le graphique
-        data = yf.Ticker(ticker).history(period="6mo")
+        # Lecture du CSV local
+        data = pd.read_csv(csv_file, index_col='date', parse_dates=True)
         
         if data.empty:
-            st.warning(f"Pas de données graphiques pour {ticker}")
+            st.warning("Données vides.")
             return
 
-        # Graphique en Bougies
+        # Graphique
         fig = go.Figure(data=[go.Candlestick(
             x=data.index,
             open=data['Open'], high=data['High'],
@@ -27,141 +34,66 @@ def display_stock_chart(ticker):
             name=ticker
         )])
         
-        # Moyenne Mobile 50 jours (Ligne Orange)
-        fig.add_trace(go.Scatter(
-            x=data.index, 
-            y=data['Close'].rolling(window=50).mean(), 
-            mode='lines', 
-            name='MA 50', 
-            line=dict(color='orange', width=1)
-        ))
+        # Moyenne Mobile 50j (calculée sur les données locales)
+        data['MA50'] = data['Close'].rolling(window=50).mean()
+        fig.add_trace(go.Scatter(x=data.index, y=data['MA50'], mode='lines', name='MA 50', line=dict(color='orange')))
         
-        fig.update_layout(
-            title=f"Cours : {ticker} (6 mois)",
-            xaxis_title="Date", yaxis_title="Prix",
-            height=450, template="plotly_dark",
-            margin=dict(l=20, r=20, t=50, b=20)
-        )
+        fig.update_layout(title=f"{ticker} (Source: Kafka/Local)", height=450, template="plotly_dark")
         st.plotly_chart(fig, use_container_width=True)
+        
     except Exception as e:
-        st.error(f"Erreur graphique {ticker}: {e}")
+        st.error(f"Erreur lecture fichier : {e}")
 
-def display_sidebar_metrics():
-    """Affiche les prix en direct et l'état du marché"""
+# --- SIDEBAR (PRIX LIVE) ---
+# Note: Pour le "Live" ultra-rapide (la seconde), on garde yfinance.fast_info en direct
+# car Kafka est utilisé ici pour le "Trend" (l'historique) et l'analyse.
+def display_sidebar():
     st.sidebar.header("🔴 Live Market")
-    st.sidebar.caption("État des marchés & Cours en temps réel")
-    
+    if st.sidebar.button("🔄 Rafraîchir"):
+        st.rerun()
+        
     for ticker in TICKERS:
         try:
             stock = yf.Ticker(ticker)
+            info = stock.fast_info
+            last = info['last_price']
+            prev = info['previous_close']
+            delta = ((last - prev) / prev) * 100
             
-            # Récupération Info Rapide
-            fast_info = stock.fast_info
+            color = "green" if delta >= 0 else "red"
+            icon = "🟢" if delta >= 0 else "🔴"
             
-            # État du marché (Ouvert/Fermé)
-            market_state = stock.info.get('marketState', 'UNKNOWN')
-            
-            if market_state == "REGULAR":
-                state_icon, state_color = "🟢", "green"
-            elif "PRE" in market_state:
-                state_icon, state_color = "🟠", "orange" # Pre-market
-            elif "POST" in market_state:
-                state_icon, state_color = "🌙", "orange" # Post-market
-            elif "CLOSED" in market_state:
-                state_icon, state_color = "🔴", "red"
-            else:
-                state_icon, state_color = "⚪", "grey"
-
-            # Calculs Variation
-            last = fast_info['last_price']
-            prev = fast_info['previous_close']
-            delta = last - prev
-            delta_pct = (delta / prev) * 100
-            
-            # Affichage Badge Statut
-            st.sidebar.markdown(f":{state_color}[{state_icon} **{ticker}**]")
-            
-            # Affichage Prix
-            st.sidebar.metric(
-                label="Prix",
-                value=f"{last:.2f} {fast_info['currency']}",
-                delta=f"{delta:.2f} ({delta_pct:.2f}%)",
-                label_visibility="collapsed"
-            )
+            st.sidebar.markdown(f"**{ticker}**")
+            st.sidebar.markdown(f"{last:.2f} {info['currency']} (:{color}[{icon} {delta:.2f}%])")
             st.sidebar.divider()
+        except: pass
 
-        except Exception:
-            st.sidebar.markdown(f"⚠️ **{ticker}**: Erreur Data")
+display_sidebar()
 
-# --- 2. EXÉCUTION DE LA SIDEBAR ---
-
-# Bouton Rafraîchir
-if st.sidebar.button("🔄 Rafraîchir les prix", use_container_width=True):
-    display_sidebar_metrics()
-else:
-    display_sidebar_metrics() # Affichage par défaut
-
-# --- 3. ZONE PRINCIPALE (CHAT & RAG) ---
-
+# --- CHATBOT ---
 col1, col2 = st.columns([2, 1])
 
 with col1:
-    st.subheader("🤖 Chatbot Analyste")
-    query = st.text_input("Posez votre question...", placeholder="Ex: Analyse la tendance de Tesla et affiche le graphique")
+    st.subheader("🤖 Analyste")
+    query = st.text_input("Question...", placeholder="Ex: Analyse STM")
     
-    if st.button("Analyser", type="primary"):
-        if query:
-            with st.spinner('🔍 Analyse Sémantique, Technique & Sentimentale...'):
-                # On récupère la réponse ET le ticker dominant pour le graphique
-                response, sources, dominant_ticker = get_answer(query)
-                
-                st.success("Analyse IA :")
-                st.markdown(response)
-                
-                # AFFICHE LE GRAPHIQUE SI UN TICKER EST DÉTECTÉ
-                if dominant_ticker:
-                    st.divider()
-                    st.subheader(f"📊 Focus : {dominant_ticker}")
-                    display_stock_chart(dominant_ticker)
-                else:
-                    st.caption("Aucune action spécifique détectée pour afficher un graphique.")
+    if st.button("Analyser", type="primary") and query:
+        with st.spinner('Analyses Kafka en cours...'):
+            response, sources, dominant_ticker = get_answer(query)
+            st.success("Réponse IA")
+            st.markdown(response)
+            
+            if dominant_ticker:
+                st.divider()
+                st.subheader(f"📊 Données Historiques : {dominant_ticker}")
+                display_stock_chart(dominant_ticker)
 
 with col2:
-    st.subheader("📡 Flux & Sentiments")
-    
+    st.subheader("📡 Flux Kafka")
     if 'sources' in locals() and sources:
         for s in sources:
-            # --- GESTION VISUELLE DES SOURCES ---
-            
-            # 1. Type de source (Icône)
-            if s['type'] == 'alert':
-                icon = "🚨"
-                st.toast(f"Alerte sur {s['ticker']}", icon="🚨")
-            elif s['type'] == 'technical':
-                icon = "📊"
-            else:
-                icon = "🗞️" # News
-
-            # 2. Sentiment (Couleur & Jauge)
-            sent = s['sentiment']
-            if sent > 0.05:
-                sent_txt = "Positif"
-                sent_color = "green"
-            elif sent < -0.05:
-                sent_txt = "Négatif"
-                sent_color = "red"
-            else:
-                sent_txt = "Neutre"
-                sent_color = "grey"
-
-            # 3. Affichage Carte (Expander)
-            label = f"{icon} {s['ticker']} [{s['date']}]"
-            with st.expander(label):
-                st.caption(f"Type: {s['type'].upper()}")
-                st.markdown(f"Sentiment: :{sent_color}[**{sent_txt}**] ({sent:.2f})")
+            icon = "🚨" if s['type'] == 'alert' else ("📊" if s['type'] == 'technical' else "🗞️")
+            with st.expander(f"{icon} {s['ticker']} [{s['date']}]"):
                 st.write(f"**{s['title']}**")
-                
-                if s['link'] and s['link'] != '#':
-                    st.markdown(f"[🔗 Lire la source]({s['link']})")
-    else:
-        st.info("Les sources (News, Analyses Techniques, Alertes) apparaîtront ici.")
+                st.caption(f"Sentiment: {s['sentiment']:.2f}")
+                st.markdown(f"[Lire la suite]({s['link']})")
