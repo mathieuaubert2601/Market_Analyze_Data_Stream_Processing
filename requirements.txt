@@ -9,3 +9,4 @@ pandas
 plotly          
 vaderSentiment   
 watchdog
+feedparser

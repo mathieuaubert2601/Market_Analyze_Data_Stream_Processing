@@ -105,11 +105,47 @@ with col2:
                             return f"{float(val):.2f}"
                         except:
                             return str(val)
-                    st.write(f"Current Price: {fmt(s.get('current_price'))}")
-                    st.write(f"Long term mean (200j): {fmt(s.get('mean_200'))}")
-                    st.write(f"Medium term mean (50j): {fmt(s.get('mean_50'))}")
-                    st.write(f"Short term mean (10j): {fmt(s.get('mean_10'))}")
+                        
+                    current_price = s.get('current_price')
+                    mean_200 = s.get('mean_200')
+                    mean_50 = s.get('mean_50')
+                    mean_10 = s.get('mean_10')
+                    last_close = s.get('last_close')
+                    opening_price = s.get('opening_price')
+                    price_12h_ago = s.get('price_12h_ago')
+                    price_6h_ago = s.get('price_6h_ago')
+                    price_3h_ago = s.get('price_3h_ago')
+                    price_1h_ago = s.get('price_1h_ago')
+                    price_30min_ago = s.get('price_30min_ago')
+                    price_10min_ago = s.get('price_10min_ago')
+
+
+                    if current_price is not None:
+                        st.write(f"Current Price: {fmt(current_price)}")
+                    if mean_200 is not None:
+                        st.write(f"Long term mean (200j): {fmt(mean_200)}")
+                    if mean_50 is not None:
+                        st.write(f"Medium term mean (50j): {fmt(mean_50)}")
+                    if mean_10 is not None:
+                        st.write(f"Short term mean (10j): {fmt(mean_10)}")
+                    if last_close is not None:
+                        st.write(f"Last Close: {fmt(last_close)}")
+                    if opening_price is not None:
+                        st.write(f"Opening Price: {fmt(opening_price)}")
+                    if price_12h_ago is not None:
+                        st.write(f"Price 12h ago: {fmt(price_12h_ago)}")
+                    if price_6h_ago is not None:
+                        st.write(f"Price 6h ago: {fmt(price_6h_ago)}")
+                    if price_3h_ago is not None:
+                        st.write(f"Price 3h ago: {fmt(price_3h_ago)}")
+                    if price_1h_ago is not None:
+                        st.write(f"Price 1h ago: {fmt(price_1h_ago)}") 
+                    if price_30min_ago is not None:
+                        st.write(f"Price 30min ago: {fmt(price_30min_ago)}")
+                    if price_10min_ago is not None:
+                        st.write(f"Price 10min ago: {fmt(price_10min_ago)}")
                     st.markdown(f"[Read more]({s['link']})")
+
             
             if(s['type'] == 'news'):
                 with st.expander(f"{icon} {s['ticker']} - News Article"):

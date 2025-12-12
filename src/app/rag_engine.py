@@ -2,6 +2,8 @@ import os
 import chromadb
 import datetime
 import sys
+import json
+import time
 from groq import Groq
 from sentence_transformers import SentenceTransformer
 from dotenv import load_dotenv
@@ -27,32 +29,53 @@ print("📂 [RAG] Connexion à ChromaDB...")
 chroma_client = chromadb.PersistentClient(path=CHROMA_PATH)
 collection = chroma_client.get_collection(name=COLLECTION_NAME)
 
+# --- FONCTIONS D'AIDE ---
+
+def determine_intent(user_query, client_groq):
+    """
+    Détermine si l'utilisateur veut du récent (RSS/Live) ou de l'historique.
+    """
+    system_prompt = (
+        "Tu es un routeur temporel. Ta réponse doit être UN SEUL mot."
+        "\n- Réponds 'RECENT' si la question contient : aujourd'hui, ce matin, maintenant, news, actualité récente, dernier moment, chute, hausse."
+        "\n- Réponds 'HISTORICAL' si la question est générale, porte sur l'analyse technique moyen terme, le passé, ou une synthèse."
+    )
+    try:
+        resp = client_groq.chat.completions.create(
+            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_query}],
+            model="llama-3.3-70b-versatile",
+            temperature=0,
+            max_tokens=10
+        )
+        intent = resp.choices[0].message.content.strip().upper()
+        if "RECENT" in intent: return "RECENT"
+        return "HISTORICAL"
+    except:
+        return "HISTORICAL"
+
+# --- FONCTION PRINCIPALE ---
+
 def get_answer(user_query):
     """
-    Fonction principale du RAG :
-    Structure la réponse en 3 parties : Présentation, News/Impact, Technique.
+    Fonction principale du RAG (Uniquement via ChromaDB).
     """
     
-    # 1. Vectorisation de la question
+    # 1. VECTORISATION
     query_vector = embedding_model.encode(user_query).tolist()
     
-    # 2. DÉTECTION INTELLIGENTE DU TICKER
+    # 2. DÉTECTION DU TICKER
     target_ticker = None
     query_upper = user_query.upper()
     
-    # Dictionnaire de synonymes (Version compacte)
     SYNONYMS = {
-        "STLAP.PA": ["STELLANTIS", "STLA", "PEUGEOT", "PSA", "CITROEN", "FIAT", "CHRYSLER", "FCA", "JEEP"],
-        "STMPA.PA": ["STMICROELECTRONICS", "STM", "STMICRO", "SGS-THOMSON", "SEMI-CONDUCTEURS"],
-        "ORA.PA":   ["ORANGE", "FRANCE TELECOM", "OPERATEUR"],
-        "ENGI.PA":  ["ENGIE", "GDF", "GDF SUEZ", "GAZ DE FRANCE"],
-        "ALHPI.PA": ["HOPIUM", "MACHINA", "HYDROGENE"],
-        "CS.PA":    ["AXA", "GROUPE AXA", "ASSURANCE"],
-        "DCAM.PA":  ["AMUNDI", "ETF MONDE", "MSCI WORLD", "CW8", "AMUNDI WORLD"],
-        "ETZ.PA":   ["BNP", "STOXX 600", "ETF EUROPE", "BNP EASY"],
+        "STLAP.PA": ["STELLANTIS", "STLA", "PEUGEOT", "PSA"],
+        "STMPA.PA": ["STMICROELECTRONICS", "STM", "STMICRO"],
+        "ORA.PA":   ["ORANGE", "FRANCE TELECOM"],
+        "ENGI.PA":  ["ENGIE", "GDF"],
+        "CS.PA":    ["AXA", "ASSURANCE"],
+        "ETZ.PA":   ["BNP", "PARIBAS"]
     }
 
-    # Recherche inversée dans les synonymes
     for ticker, mots_cles in SYNONYMS.items():
         if any(mot in query_upper for mot in mots_cles):
             target_ticker = ticker
@@ -64,116 +87,134 @@ def get_answer(user_query):
                 target_ticker = t
                 break
     
-    # 3. STRATÉGIE DE RÉCUPÉRATION (HYBRID FETCHING)
+    # 3. ROUTAGE INTELLIGENT
+    intent = determine_intent(user_query, client_groq)
+    print(f"🧠 Intention : {intent} | Ticker : {target_ticker}")
+
+    context_text = ""
+    sources = []
+    dominant_ticker = target_ticker
+
+    # --- CONFIGURATION DES FILTRES CHROMA ---
+    # Par défaut, on cherche tout type de contenu pertinent
+    search_filters = {}
+    
+    if target_ticker:
+        search_filters["ticker"] = {"$eq": target_ticker}
+
+    # Si RECENT : on force la récupération des données 'intraday' et 'news'
+    # ChromaDB ne gère pas facilement le tri temporel pur, donc on récupère
+    # les vecteurs proches et on triera en Python par date.
+    
+    # Récupération Vectorielle
+    results = collection.query(
+        query_embeddings=[query_vector],
+        n_results=15, # On prend large pour filtrer ensuite
+        where=search_filters if target_ticker else None
+    )
+
     combined_docs = []
     seen_hashes = set()
 
-    def process_results(results_obj):
-        if results_obj['documents']:
-            for i, doc in enumerate(results_obj['documents'][0]):
-                meta = results_obj['metadatas'][0][i]
-                unique_hash = f"{meta.get('ticker')}_{meta.get('doc', '')[:20]}"
-                if unique_hash in seen_hashes: continue
-                seen_hashes.add(unique_hash)
+    if results['documents']:
+        for i, doc in enumerate(results['documents'][0]):
+            meta = results['metadatas'][0][i]
+            
+            # Déduplication
+            unique_hash = f"{meta.get('ticker')}_{meta.get('doc', '')[:20]}"
+            if unique_hash in seen_hashes: continue
+            seen_hashes.add(unique_hash)
+            
+            timestamp = float(meta.get('timestamp', 0))
+            doc_type = meta.get('type', 'unknown')
 
-                try: ts = float(meta.get('timestamp', 0))
-                except: ts = 0.0
-                
-                combined_docs.append({
-                    "doc": doc, "meta": meta, "timestamp": ts, 
-                    "sentiment": meta.get('sentiment', 0.0)
-                })
+            # Pondération temporelle (Recency Weighting)
+            # Si l'intention est RECENT, on pénalise les vieux documents
+            if intent == "RECENT":
+                # Si le doc a plus de 24h (86400s), on l'ignore sauf si c'est de l'historique pur
+                if (time.time() - timestamp) > 86400 and doc_type == 'news':
+                    continue
+            
+            combined_docs.append({
+                "doc": doc,
+                "meta": meta,
+                "timestamp": timestamp
+            })
 
-    # Construction des filtres avec la syntaxe $and
-    if target_ticker:
-        print(f"🎯 Cible verrouillée : {target_ticker}")
-        search_filters_news = {"$and": [{"type": {"$eq": "news"}}, {"ticker": {"$eq": target_ticker}}]}
-        search_filters_tech = {"$and": [{"type": {"$eq": "technical"}}, {"ticker": {"$eq": target_ticker}}]}
-    else:
-        search_filters_news = {"type": "news"}
-        search_filters_tech = {"type": "technical"}
-
-    # A. Récupérer les News
-    try:
-        results_news = collection.query(
-            query_embeddings=[query_vector],
-            n_results=6,
-            where=search_filters_news
-        )
-        process_results(results_news)
-    except: pass
-
-    # B. Récupérer la Tech
-    try:
-        results_tech = collection.query(
-            query_embeddings=[query_vector],
-            n_results=2,
-            where=search_filters_tech
-        )
-        process_results(results_tech)
-    except: pass
-
-    # 4. TRI ET SÉLECTION FINALE
+    # Tri final par date décroissante (Le plus récent en haut)
     combined_docs.sort(key=lambda x: x['timestamp'], reverse=True)
-    
-    dominant_ticker = target_ticker
-    if not dominant_ticker and combined_docs:
-        tickers_found = [d['meta'].get('ticker') for d in combined_docs]
-        if tickers_found:
-            dominant_ticker = Counter(tickers_found).most_common(1)[0][0]
 
-    # 5. CONSTRUCTION DU CONTEXTE
-    context_text = ""
-    sources = []
-    
-    # Si vide
-    if not combined_docs:
-        return "⚠️ Je n'ai trouvé aucune information récente (News ou Analyse) pour cette demande dans le flux Kafka.", [], None
+    # Sélection des Top résultats
+    final_docs = combined_docs[:8]
 
-    for item in combined_docs[:8]:
+    # Construction du contexte pour le LLM
+    if not dominant_ticker and final_docs:
+        tickers_found = [d['meta'].get('ticker') for d in final_docs]
+        if tickers_found: dominant_ticker = Counter(tickers_found).most_common(1)[0][0]
+
+    for item in final_docs:
         meta = item['meta']
         try: date_str = datetime.datetime.fromtimestamp(item['timestamp']).strftime('%d/%m %H:%M')
         except: date_str = "?"
         
-        badge = "ACTUALITÉ" if meta.get('type') == 'news' else "TECHNIQUE"
-        ticker_name = meta.get('ticker', 'Inconnu')
+        doc_type = meta.get('type', 'info').upper()
+        source_origin = meta.get('source', 'unknown') # google_rss ou yahoo
         
-        context_text += f"SOURCE [{date_str}] ({badge}) SUJET:{ticker_name} CONTENU: {item['doc']}\n"
+        # Badge visuel pour le contexte
+        badge = f"[{doc_type} | {source_origin}]"
+        
+        context_text += f"SOURCE {badge} [{date_str}] SUJET:{meta.get('ticker')} : {item['doc']}\n"
         
         sources.append({
-            "ticker": ticker_name,
-            "title": item['doc'],
+            "ticker": meta.get('ticker'), 
+            "title": item['doc'], 
             "link": meta.get('link', '#'),
-            "date": date_str,
-            "type": meta.get('type'),
-            "sentiment": item['sentiment'],
-            "current_price": meta.get('current_price', None),
-            "mean_200": meta.get('mean_200', None),
-            "mean_50": meta.get('mean_50', None),
-            "mean_10": meta.get('mean_10', None),
+            "date": date_str, 
+            "type": meta.get('type'), 
+            "sentiment": meta.get('sentiment', 0),
+            "current_price": meta.get('current_price'), 
+            "mean_50": meta.get('mean_50'),
+            "mean_10": meta.get('mean_10'),
+            "mean_200": meta.get('mean_200'),
+            # Ajout des champs intraday si dispos
+            "price_10min_ago": meta.get('price_10min_ago'),
+            "price_1h_ago": meta.get('price_1h_ago'),
+            "price_3h_ago": meta.get('price_3h_ago'),
+            "price_6h_ago": meta.get('price_6h_ago'),
+            "price_12h_ago": meta.get('price_12h_ago'),
+            "last_close": meta.get('last_close'),
+            "opening_price": meta.get('opening_price')
         })
 
-    # 6. PROMPT STRUCTURÉ (C'EST ICI QUE TOUT CHANGE)
+    # --- CAS DE VIDE (FALLBACK) ---
+    if not context_text:
+        context_text = "Aucune information récente trouvée dans la base de connaissances (Kafka)."
+
+    # 4. GÉNÉRATION LLM
     system_prompt = (
-        "Tu es un analyste financier senior de haut niveau."
-        "\n\nOBJECTIF :"
-        "\nProduire une note d'analyse structurée, claire et professionnelle pour un investisseur."
-        "\n\nSTRUCTURE DE LA RÉPONSE OBLIGATOIRE :"
-        "\n\n1. 🏢 PRÉSENTATION & SECTEUR"
-        "\n   - Présente brièvement l'entreprise et son secteur d'activité."
-        "\n   - *Exception :* Pour cette partie uniquement, tu peux utiliser tes connaissances générales."
-        "\n\n2. 📰 DERNIÈRES ACTUALITÉS & IMPACT"
-        "\n   - Résume les actualités fournies dans le CONTEXTE ci-dessous."
-        "\n   - Pour chaque news, donne le nom de l'article et analyse brièvement son impact potentiel (Positif/Négatif/Neutre)."
-        "\n   - Si le contexte ne contient aucune news, écris : 'Aucune actualité récente détectée dans le flux'."
-        "\n   - *Règle :* Utilise STRICTEMENT le contexte. N'invente pas de news."
-        "\n\n3. 📈 ANALYSE TECHNIQUE DU COURS"
-        "\n   - Donne le Prix Actuel et la Variation."
-        "\n   - Analyse la Tendance (Haussière/Baissière) en te basant sur les Moyennes Mobiles du contexte."
-        "\n   - *Règle :* Utilise STRICTEMENT le contexte pour les chiffres."
-        "\n\n4. 📝 CONCLUSION"
-        "\n   - Synthèse rapide en une phrase sur le sentiment général (Bullish/Bearish)."
-        "\n\nCONTEXTE TEMPS RÉEL (KAFKA) :"
+        "You are a Senior Quantitative Analyst at a top-tier investment bank."
+        "\n\nOBJECTIVE:"
+        "\nProduce a highly detailed, data-driven market commentary using ALL available technical and fundamental data points."
+        "\n\nCRITICAL DATA RULES (MANDATORY):"
+        "\n1. **Use Specific Numbers**: Never say 'the stock dropped'. Say 'the stock dropped -0.45% over the last hour'."
+        "\n2. **Compare vs Moving Averages**: You MUST compare the 'Current Price' against the 'Mean_50' and 'Mean_200' if available. State if the price is ABOVE or BELOW these levels to define the trend."
+        "\n3. **Cite Sources**: When mentioning a number, specify its origin (e.g., '[Technical Report]', '[Intraday Metrics]')."
+        "\n4. **English Only**: Output must be in professional English."
+        "\n\nDATA DICTIONARY:"
+        "\n- [INTRADAY_METRICS]: Variations (10m, 1h, 6h). Use this for immediate momentum."
+        "\n- [TECHNICAL]: Contains MA50 (Medium Term) and MA200 (Long Term Trend). Use MA200 to define the 'secular trend'."
+        "\n- [NEWS] / [RSS]: Context for WHY the numbers are moving."
+        "\n\nRESPONSE STRUCTURE:"
+        "\n## Executive Summary"
+        "\n(Synthesize the trend in one sentence using the price vs MA200)."
+        "\n\n## Technical Health Check"
+        "\n* **Trend Analysis**: Compare Current Price vs MA50 and MA200. (e.g., 'Price (14.50) is trading below MA200 (15.20), indicating a long-term bearish trend.')"
+        "\n* **Intraday Volatility**: Cite the 1h and 6h variations explicitly."
+        "\n\n## Fundamental Catalysts"
+        "\n(Connect the news to the numbers. Did the news cause the 1h drop?)"
+        "\n\n## Analyst Outlook"
+        "\n(Final verdict: Bullish, Bearish, or Neutral based on the confluence of Technicals and News.)"
+        "\n\nCONTEXT DATA:"
         f"\n{context_text}"
     )
     
