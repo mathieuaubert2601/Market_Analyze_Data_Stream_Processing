@@ -146,7 +146,11 @@ def get_answer(user_query):
             "link": meta.get('link', '#'),
             "date": date_str,
             "type": meta.get('type'),
-            "sentiment": item['sentiment']
+            "sentiment": item['sentiment'],
+            "current_price": meta.get('current_price', None),
+            "mean_200": meta.get('mean_200', None),
+            "mean_50": meta.get('mean_50', None),
+            "mean_10": meta.get('mean_10', None),
         })
 
     # 6. PROMPT STRUCTURÉ (C'EST ICI QUE TOUT CHANGE)
@@ -160,7 +164,7 @@ def get_answer(user_query):
         "\n   - *Exception :* Pour cette partie uniquement, tu peux utiliser tes connaissances générales."
         "\n\n2. 📰 DERNIÈRES ACTUALITÉS & IMPACT"
         "\n   - Résume les actualités fournies dans le CONTEXTE ci-dessous."
-        "\n   - Pour chaque news, analyse brièvement son impact potentiel (Positif/Négatif/Neutre)."
+        "\n   - Pour chaque news, donne le nom de l'article et analyse brièvement son impact potentiel (Positif/Négatif/Neutre)."
         "\n   - Si le contexte ne contient aucune news, écris : 'Aucune actualité récente détectée dans le flux'."
         "\n   - *Règle :* Utilise STRICTEMENT le contexte. N'invente pas de news."
         "\n\n3. 📈 ANALYSE TECHNIQUE DU COURS"

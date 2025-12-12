@@ -77,6 +77,10 @@ def analyze_technicals_and_alerts(stock, ticker):
             "ticker": ticker,
             "title": f"Tech Report : {ticker}",
             "content": tech_text,
+            "current_price": current,
+            "mean_200": ma_200,
+            "mean_50": ma_50,
+            "mean_10": ma_10,
             "publisher": "Tech Bot",
             "link": f"https://finance.yahoo.com/quote/{ticker}",
             "publish_time": int(time.time()),
@@ -131,7 +135,8 @@ def fetch_and_send_data(producer, seen_news):
                         "title": title,
                         "publisher": content.get('provider', {}).get('displayName', 'Yahoo'),
                         "link": link,
-                        "publish_time": int(content.get('providerPublishTime', time.time())),
+                        "summary": content.get('summary'),
+                        "publish_time": int(time.mktime(time.strptime(content.get('pubDate'), "%Y-%m-%dT%H:%M:%SZ"))),
                         "type": "news"
                     }
                     

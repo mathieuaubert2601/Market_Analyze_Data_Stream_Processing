@@ -62,10 +62,9 @@ def process_news(data):
             unique_id = f"NEWS_{ticker}_{raw_id}"
         # ----------------------------------------
 
-        sentiment = analyzer.polarity_scores(title)['compound']
+        sentiment = analyzer.polarity_scores(data.get('summary', title))['compound']
         text_embed = f"{ticker}: {title}"
         vector = embedding_model.encode(text_embed).tolist()
-        
         # Upsert (Insérer ou Mettre à Jour)
         collection.upsert(
             ids=[unique_id],
@@ -74,6 +73,11 @@ def process_news(data):
             metadatas=[{
                 "ticker": ticker,
                 "timestamp": data.get('publish_time', 0),
+                "current_price": data.get('current_price', None),
+                "mean_200": data.get('mean_200', None),
+                "mean_50": data.get('mean_50', None),
+                "mean_10": data.get('mean_10', None),
+                "content": data.get('summary', title),
                 "type": doc_type,
                 "sentiment": sentiment,
                 "doc": title,

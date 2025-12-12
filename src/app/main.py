@@ -7,7 +7,7 @@ from rag_engine import get_answer
 from src.config import TICKERS, HISTORY_PATH # On a besoin du chemin
 
 st.set_page_config(page_title="Market Analyst AI", page_icon="📈", layout="wide")
-st.title("📈 Smart Dashboard (Full Kafka Architecture)")
+st.title("Financial Market Analyst")
 
 # --- FONCTION GRAPHIQUE (SOURCE : FICHIERS LOCAUX) ---
 def display_stock_chart(ticker):
@@ -48,10 +48,9 @@ def display_stock_chart(ticker):
 # Note: Pour le "Live" ultra-rapide (la seconde), on garde yfinance.fast_info en direct
 # car Kafka est utilisé ici pour le "Trend" (l'historique) et l'analyse.
 def display_sidebar():
-    st.sidebar.header("🔴 Live Market")
-    if st.sidebar.button("🔄 Rafraîchir"):
+    if st.sidebar.button("🔄 Refresh"):
         st.rerun()
-        
+    st.sidebar.header("🕑 Live Market")
     for ticker in TICKERS:
         try:
             stock = yf.Ticker(ticker)
@@ -61,10 +60,11 @@ def display_sidebar():
             delta = ((last - prev) / prev) * 100
             
             color = "green" if delta >= 0 else "red"
-            icon = "🟢" if delta >= 0 else "🔴"
-            
-            st.sidebar.markdown(f"**{ticker}**")
-            st.sidebar.markdown(f"{last:.2f} {info['currency']} (:{color}[{icon} {delta:.2f}%])")
+            icon = "+" if delta >= 0 else ""
+            #Green if the market is open, red if closed
+            market_state = "🟢" if stock.info.get("marketState") == "REGULAR" else "🔴"
+            st.sidebar.markdown(f"**{ticker}** - {market_state}")
+            st.sidebar.markdown(f"{last:.4f} {info['currency']} (:{color}[{icon} {delta:.2f}%])")
             st.sidebar.divider()
         except: pass
 
@@ -74,26 +74,47 @@ display_sidebar()
 col1, col2 = st.columns([2, 1])
 
 with col1:
-    st.subheader("🤖 Analyste")
-    query = st.text_input("Question...", placeholder="Ex: Analyse STM")
-    
-    if st.button("Analyser", type="primary") and query:
-        with st.spinner('Analyses Kafka en cours...'):
+    with st.form(key='analysis_form'):
+        query = st.text_input("Question...", placeholder="Ex: Could you perfom an analysis about STM ?")
+        submit_button = st.form_submit_button(label="Analyze", type="primary")
+
+    if submit_button and query:
+        with st.spinner('Kafka analyses in progress...'):
             response, sources, dominant_ticker = get_answer(query)
-            st.success("Réponse IA")
+            st.success("AI Response generated!")
             st.markdown(response)
             
             if dominant_ticker:
                 st.divider()
-                st.subheader(f"📊 Données Historiques : {dominant_ticker}")
+                st.subheader(f"📊 Historical Data: {dominant_ticker}")
                 display_stock_chart(dominant_ticker)
 
 with col2:
-    st.subheader("📡 Flux Kafka")
+    st.subheader("📡 Sources")
     if 'sources' in locals() and sources:
         for s in sources:
-            icon = "🚨" if s['type'] == 'alert' else ("📊" if s['type'] == 'technical' else "🗞️")
-            with st.expander(f"{icon} {s['ticker']} [{s['date']}]"):
-                st.write(f"**{s['title']}**")
-                st.caption(f"Sentiment: {s['sentiment']:.2f}")
-                st.markdown(f"[Lire la suite]({s['link']})")
+            icon = "📰" if s['type'] == 'news' else "📈"
+
+            if(s['type'] == 'technical'):
+                with st.expander(f"{icon} {s['ticker']} - Technical Analysis"):
+                    st.write(f"Date : {s['date']}")
+                    def fmt(val):
+                        if val is None or val == 'N/A' or val != val: # val != val détecte aussi NaN
+                            return "N/A"
+                        try:
+                            return f"{float(val):.2f}"
+                        except:
+                            return str(val)
+                    st.write(f"Current Price: {fmt(s.get('current_price'))}")
+                    st.write(f"Long term mean (200j): {fmt(s.get('mean_200'))}")
+                    st.write(f"Medium term mean (50j): {fmt(s.get('mean_50'))}")
+                    st.write(f"Short term mean (10j): {fmt(s.get('mean_10'))}")
+                    st.markdown(f"[Read more]({s['link']})")
+            
+            if(s['type'] == 'news'):
+                with st.expander(f"{icon} {s['ticker']} - News Article"):
+                    st.write(f"Date : {s['date']}")
+                    st.write(f"**{s['title']}**")
+                    st.caption(f"Sentiment: {s['sentiment']:.2f}")
+                    st.markdown(f"[Read more]({s['link']})")
+        
