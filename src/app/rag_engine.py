@@ -4,229 +4,270 @@ import datetime
 import sys
 import json
 import time
+import math
+import re
 from groq import Groq
 from sentence_transformers import SentenceTransformer
 from dotenv import load_dotenv
 from collections import Counter
 
-# Ajout du chemin racine pour les imports
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
-from src.config import CHROMA_PATH, COLLECTION_NAME, EMBEDDING_MODEL_NAME, LLM_MODEL_NAME, TICKERS
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
+from src.config import (
+    CHROMA_PATH,
+    COLLECTION_NAME,
+    EMBEDDING_MODEL_NAME,
+    LLM_MODEL_NAME,
+    TICKERS,
+    HORIZON_RECENT,
+    HORIZON_HISTORICAL,
+)
 
-# --- INITIALISATION ---
+# --- INITIALIZATION ---
 load_dotenv()
 
 api_key = os.getenv("GROQ_API_KEY")
 if not api_key:
-    raise ValueError("❌ Clé API GROQ manquante dans le fichier .env")
+    raise ValueError("❌ Missing GROQ_API_KEY in .env file")
 
+# Initialize Clients
 client_groq = Groq(api_key=api_key)
 
-print("⏳ [RAG] Chargement du modèle d'embedding...")
+print("[RAG] Loading Embedding Model...")
 embedding_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
 
-print("📂 [RAG] Connexion à ChromaDB...")
+print(f"[RAG] Connecting to ChromaDB at {CHROMA_PATH}...")
 chroma_client = chromadb.PersistentClient(path=CHROMA_PATH)
 collection = chroma_client.get_collection(name=COLLECTION_NAME)
 
-# --- FONCTIONS D'AIDE ---
+# --- HELPER FUNCTIONS ---
 
-def determine_intent(user_query, client_groq):
+def get_dynamic_horizon(user_query: str, client_groq: Groq) -> float:
     """
-    Détermine si l'utilisateur veut du récent (RSS/Live) ou de l'historique.
+    TIME AGENT: Calculates the ideal search window in HOURS.
+    Example: 
+    - "Why is it dropping now?" -> Returns 2 hours (in seconds).
+    - "What happened last Friday?" (asked on Sunday) -> Returns 48 or 72 hours.
     """
+    now_str = datetime.datetime.now().strftime("%A %d %B %Y at %H:%M")
+    
     system_prompt = (
-        "Tu es un routeur temporel. Ta réponse doit être UN SEUL mot."
-        "\n- Réponds 'RECENT' si la question contient : aujourd'hui, ce matin, maintenant, news, actualité récente, dernier moment, chute, hausse."
-        "\n- Réponds 'HISTORICAL' si la question est générale, porte sur l'analyse technique moyen terme, le passé, ou une synthèse."
+        f"Current System Date/Time: {now_str}."
+        "\nYou are a Time Horizon Calculator. "
+        "\nBased on the user query, determine how many HOURS back I need to search to find the answer."
+        "\n\nRULES:"
+        "\n- If query is about 'now', 'current', 'live', 'moment': Return '2' (2 hours)."
+        "\n- If query is about 'yesterday': Return '24'."
+        "\n- If query is about a specific day (e.g., 'Friday') and today is different: Calculate the hours difference."
+        "\n- If query is 'history', 'trend', 'long term': Return '720' (30 days)."
+        "\n- OUTPUT: Just the integer number. No text."
     )
+
     try:
         resp = client_groq.chat.completions.create(
-            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_query}],
+            messages=[
+                {"role": "system", "content": system_prompt}, 
+                {"role": "user", "content": user_query}
+            ],
             model="llama-3.3-70b-versatile",
             temperature=0,
-            max_tokens=10
+            max_tokens=10,
         )
-        intent = resp.choices[0].message.content.strip().upper()
-        if "RECENT" in intent: return "RECENT"
-        return "HISTORICAL"
+        text = resp.choices[0].message.content
+        hours = int(re.search(r'\d+', text).group())
+        
+        # Security cap: Minimum 2h, Max 30 days
+        hours = max(2, min(hours, 720))
+        return float(hours * 3600)
+    except Exception as e:
+        print(f"[Time Agent] Error: {e}. Defaulting to 2h.")
+        return HORIZON_RECENT
+
+
+def _decay(now: float, timestamp: float, horizon: float) -> float:
+    """
+    Exponential Time Decay.
+    Scores drop significantly as they approach the horizon limit.
+    """
+    if not timestamp:
+        return 0.0
+    # Scale factor based on the dynamic horizon
+    scale = max(horizon / 3, 1) 
+    age = max(now - timestamp, 0)
+    return math.exp(-age / scale)
+
+
+def format_price_context(meta: dict) -> str:
+    """Formats intraday metrics for the LLM."""
+    try:
+        current = meta.get('current_price', 0)
+        p_10m = meta.get('price_10min_ago', 0)
+        p_1h = meta.get('price_1h_ago', 0)
+        
+        var_10m = ((current - p_10m) / p_10m * 100) if p_10m else 0
+        var_1h = ((current - p_1h) / p_1h * 100) if p_1h else 0
+        
+        return (
+            f"   - **Live Price**: {current:.2f} {meta.get('currency', 'EUR')}\n"
+            f"   - **Momentum**: 10m: {var_10m:+.2f}% | 1h: {var_1h:+.2f}%\n"
+            f"   - **Key Levels**: MA50: {meta.get('mean_50', 0):.2f} | MA200: {meta.get('mean_200', 0):.2f}"
+        )
     except:
-        return "HISTORICAL"
+        return "   - Live price data unavailable."
 
-# --- FONCTION PRINCIPALE ---
 
-def get_answer(user_query):
-    """
-    Fonction principale du RAG (Uniquement via ChromaDB).
-    """
-    
-    # 1. VECTORISATION
+# --- MAIN RAG LOGIC ---
+def get_answer(user_query: str):
+    # 1. Embed Query
     query_vector = embedding_model.encode(user_query).tolist()
-    
-    # 2. DÉTECTION DU TICKER
-    target_ticker = None
     query_upper = user_query.upper()
-    
-    SYNONYMS = {
-        "STLAP.PA": ["STELLANTIS", "STLA", "PEUGEOT", "PSA"],
-        "STMPA.PA": ["STMICROELECTRONICS", "STM", "STMICRO"],
-        "ORA.PA":   ["ORANGE", "FRANCE TELECOM"],
-        "ENGI.PA":  ["ENGIE", "GDF"],
-        "CS.PA":    ["AXA", "ASSURANCE"],
-        "ETZ.PA":   ["BNP", "PARIBAS"]
-    }
 
-    for ticker, mots_cles in SYNONYMS.items():
-        if any(mot in query_upper for mot in mots_cles):
+    # 2. Identify Ticker (Heuristic)
+    target_ticker = None
+    SYNONYMS = {
+        "STLAP.PA": ["STELLANTIS", "STLA", "PEUGEOT"],
+        "STMPA.PA": ["STMICRO", "STM", "CHIP"],
+        "ORA.PA": ["ORANGE", "TELECOM"],
+        "ENGI.PA": ["ENGIE", "GAS", "ENERGY"],
+        "CS.PA": ["AXA", "INSURANCE"],
+        "ETZ.PA": ["BNP", "BANK"],
+    }
+    for ticker, keywords in SYNONYMS.items():
+        if any(k in query_upper for k in keywords):
             target_ticker = ticker
             break
-            
     if not target_ticker:
         for t in TICKERS:
             if t in query_upper:
                 target_ticker = t
                 break
-    
-    # 3. ROUTAGE INTELLIGENT
-    intent = determine_intent(user_query, client_groq)
-    print(f"🧠 Intention : {intent} | Ticker : {target_ticker}")
 
-    context_text = ""
-    sources = []
-    dominant_ticker = target_ticker
-
-    # --- CONFIGURATION DES FILTRES CHROMA ---
-    # Par défaut, on cherche tout type de contenu pertinent
-    search_filters = {}
+    # 3. CALL TIME AGENT (Dynamic Horizon)
+    now = time.time()
+    horizon_seconds = get_dynamic_horizon(user_query, client_groq)
     
+    # Adjust Strategy based on Agent's decision
+    if horizon_seconds <= HORIZON_RECENT: # Less than 2 hours = REAL TIME MODE
+        intent_label = "LIVE_TRADING"
+        weight_cosine = 0.3
+        weight_decay = 0.7 # Heavy Time Decay
+    elif horizon_seconds > HORIZON_RECENT and horizon_seconds <= HORIZON_HISTORICAL: # Looking back days/weeks = CONTEXT MODE
+        intent_label = "HISTORICAL_ANALYSIS"
+        weight_cosine = 0.8
+        weight_decay = 0.2 # Relevance matters more than "seconds ago"
+
+    print(f"[RAG] Query: '{user_query}' | Ticker: {target_ticker} | Horizon: {horizon_seconds} seconds ({intent_label})")
+
+    # 4. ChromaDB Query
+    search_filters = {"timestamp": {"$gt": now - horizon_seconds}}
     if target_ticker:
-        search_filters["ticker"] = {"$eq": target_ticker}
+        search_filters = {"$and": [search_filters, {"ticker": {"$eq": target_ticker}}]}
 
-    # Si RECENT : on force la récupération des données 'intraday' et 'news'
-    # ChromaDB ne gère pas facilement le tri temporel pur, donc on récupère
-    # les vecteurs proches et on triera en Python par date.
-    
-    # Récupération Vectorielle
     results = collection.query(
         query_embeddings=[query_vector],
-        n_results=15, # On prend large pour filtrer ensuite
-        where=search_filters if target_ticker else None
+        n_results=20, 
+        where=search_filters if search_filters else None,
+        include=["documents", "metadatas", "distances"],
     )
 
+    # 5. Re-Ranking & Sorting
     combined_docs = []
     seen_hashes = set()
+    
+    documents = results.get("documents", [[]])[0]
+    metadatas = results.get("metadatas", [[]])[0]
+    distances = results.get("distances", [[]])[0]
 
-    if results['documents']:
-        for i, doc in enumerate(results['documents'][0]):
-            meta = results['metadatas'][0][i]
+    if documents:
+        for i, doc in enumerate(documents):
+            meta = metadatas[i]
+            dist = distances[i]
             
-            # Déduplication
             unique_hash = f"{meta.get('ticker')}_{meta.get('doc', '')[:20]}"
             if unique_hash in seen_hashes: continue
             seen_hashes.add(unique_hash)
-            
-            timestamp = float(meta.get('timestamp', 0))
-            doc_type = meta.get('type', 'unknown')
 
-            # Pondération temporelle (Recency Weighting)
-            # Si l'intention est RECENT, on pénalise les vieux documents
-            if intent == "RECENT":
-                # Si le doc a plus de 24h (86400s), on l'ignore sauf si c'est de l'historique pur
-                if (time.time() - timestamp) > 86400 and doc_type == 'news':
-                    continue
+            timestamp = float(meta.get("timestamp", 0))
             
+            # Dynamic Score Calculation
+            score = (weight_cosine * (1 - dist)) + (weight_decay * _decay(now, timestamp, horizon_seconds))
+
             combined_docs.append({
                 "doc": doc,
                 "meta": meta,
-                "timestamp": timestamp
+                "timestamp": timestamp,
+                "score": score,
+                "type": meta.get("type")
             })
 
-    # Tri final par date décroissante (Le plus récent en haut)
-    combined_docs.sort(key=lambda x: x['timestamp'], reverse=True)
+    combined_docs.sort(key=lambda x: x["score"], reverse=True)
+    top_docs = combined_docs[:8] 
 
-    # Sélection des Top résultats
-    final_docs = combined_docs[:8]
+    # 6. Build Context for LLM
+    horizon_hours = round(horizon_seconds / 3600, 2)
+    context_text = f"CURRENT SYSTEM TIME: {datetime.datetime.now().strftime('%A %Y-%m-%d %H:%M:%S')}\n"
+    context_text += f"SEARCH WINDOW: Last {horizon_hours} hours (Intent: {intent_label}).\n\n"
+    
+    sources = []
+    dominant_ticker = target_ticker
 
-    # Construction du contexte pour le LLM
-    if not dominant_ticker and final_docs:
-        tickers_found = [d['meta'].get('ticker') for d in final_docs]
-        if tickers_found: dominant_ticker = Counter(tickers_found).most_common(1)[0][0]
-
-    for item in final_docs:
-        meta = item['meta']
-        try: date_str = datetime.datetime.fromtimestamp(item['timestamp']).strftime('%d/%m %H:%M')
-        except: date_str = "?"
-        
-        doc_type = meta.get('type', 'info').upper()
-        source_origin = meta.get('source', 'unknown') # google_rss ou yahoo
-        
-        # Badge visuel pour le contexte
-        badge = f"[{doc_type} | {source_origin}]"
-        
-        context_text += f"SOURCE {badge} [{date_str}] SUJET:{meta.get('ticker')} : {item['doc']}\n"
+    if not top_docs:
+        context_text += "SYSTEM ALERT: No data found within this time window. Markets might be closed or pipeline empty.\n"
+    
+    for item in top_docs:
+        meta = item["meta"]
+        # Show full date if looking back days, else just time
+        fmt = "%H:%M:%S" if horizon_hours < 24 else "%Y-%m-%d %H:%M"
+        ts_str = datetime.datetime.fromtimestamp(item["timestamp"]).strftime(fmt)
         
         sources.append({
-            "ticker": meta.get('ticker'), 
-            "title": item['doc'], 
-            "link": meta.get('link', '#'),
-            "date": date_str, 
-            "type": meta.get('type'), 
-            "sentiment": meta.get('sentiment', 0),
-            "current_price": meta.get('current_price'), 
-            "mean_50": meta.get('mean_50'),
-            "mean_10": meta.get('mean_10'),
-            "mean_200": meta.get('mean_200'),
-            # Ajout des champs intraday si dispos
-            "price_10min_ago": meta.get('price_10min_ago'),
-            "price_1h_ago": meta.get('price_1h_ago'),
-            "price_3h_ago": meta.get('price_3h_ago'),
-            "price_6h_ago": meta.get('price_6h_ago'),
-            "price_12h_ago": meta.get('price_12h_ago'),
-            "last_close": meta.get('last_close'),
-            "opening_price": meta.get('opening_price')
+            "ticker": meta.get("ticker"),
+            "title": item["doc"],
+            "link": meta.get("link", "#"),
+            "date": ts_str,
+            "type": meta.get("type"),
+            "sentiment": meta.get("sentiment"),
+            "current_price": meta.get("current_price"),
+            "mean_50": meta.get("mean_50"),
+            "mean_200": meta.get("mean_200"),
+            "timestamp": item["timestamp"]
         })
 
-    # --- CAS DE VIDE (FALLBACK) ---
-    if not context_text:
-        context_text = "Aucune information récente trouvée dans la base de connaissances (Kafka)."
+        if meta.get("type") == "intraday_metrics":
+            context_text += f"📊 [REAL-TIME METRICS] {meta.get('ticker')} @ {ts_str}:\n"
+            context_text += format_price_context(meta) + "\n\n"
+        elif meta.get("type") == "technical":
+            context_text += f"📈 [TECHNICAL ANALYSIS] {meta.get('ticker')} @ {ts_str}:\n{item['doc']}\n\n"
+        else:
+            context_text += f"📰 [NEWS] {meta.get('ticker')} @ {ts_str} (Sentiment: {meta.get('sentiment', 0):.2f}):\n{item['doc']}\n\n"
 
-    # 4. GÉNÉRATION LLM
-    system_prompt = (
+    # 7. Final System Prompt
+    system_instruction = (
         "You are a Senior Quantitative Analyst at a top-tier investment bank."
-        "\n\nOBJECTIVE:"
-        "\nProduce a highly detailed, data-driven market commentary using ALL available technical and fundamental data points."
-        "\n\nCRITICAL DATA RULES (MANDATORY):"
-        "\n1. **Use Specific Numbers**: Never say 'the stock dropped'. Say 'the stock dropped -0.45% over the last hour'."
-        "\n2. **Compare vs Moving Averages**: You MUST compare the 'Current Price' against the 'Mean_50' and 'Mean_200' if available. State if the price is ABOVE or BELOW these levels to define the trend."
-        "\n3. **Cite Sources**: When mentioning a number, specify its origin (e.g., '[Technical Report]', '[Intraday Metrics]')."
-        "\n4. **English Only**: Output must be in professional English."
-        "\n\nDATA DICTIONARY:"
-        "\n- [INTRADAY_METRICS]: Variations (10m, 1h, 6h). Use this for immediate momentum."
-        "\n- [TECHNICAL]: Contains MA50 (Medium Term) and MA200 (Long Term Trend). Use MA200 to define the 'secular trend'."
-        "\n- [NEWS] / [RSS]: Context for WHY the numbers are moving."
-        "\n\nRESPONSE STRUCTURE:"
-        "\n## Executive Summary"
-        "\n(Synthesize the trend in one sentence using the price vs MA200)."
-        "\n\n## Technical Health Check"
-        "\n* **Trend Analysis**: Compare Current Price vs MA50 and MA200. (e.g., 'Price (14.50) is trading below MA200 (15.20), indicating a long-term bearish trend.')"
-        "\n* **Intraday Volatility**: Cite the 1h and 6h variations explicitly."
-        "\n\n## Fundamental Catalysts"
-        "\n(Connect the news to the numbers. Did the news cause the 1h drop?)"
-        "\n\n## Analyst Outlook"
-        "\n(Final verdict: Bullish, Bearish, or Neutral based on the confluence of Technicals and News.)"
-        "\n\nCONTEXT DATA:"
-        f"\n{context_text}"
+        f"\n\n### CONTEXT SETTING:"
+        f"\n- The user asked for data covering the last **{horizon_hours} hours**."
+        "\n- If the data is from Friday and today is Sunday, THIS IS EXPECTED. Analyze the Friday close."
+        "\n- If the user asks for 'Live' data but the latest timestamp is old, warn them: 'Markets are closed/Data is delayed'."
+        "\n\n### ANALYSIS RULES:"
+        "\n1. **Metrics First**: Use [REAL-TIME METRICS] to quote specific % variations (10m, 1h)."
+        "\n2. **Trend**: Compare Price vs MA200. Price < MA200 = Bearish."
+        "\n3. **Causality**: If news explains the drop, link the News Title to the Price Action."
+        "\n\n### RESPONSE FORMAT (Markdown):"
+        "\n**🔴 Market Update** (or 🟢)"
+        "\n* **Price Action**: [Price] ([Variation]%)"
+        "\n* **Technical**: [Trend Status vs MA200]"
+        "\n* **Catalyst**: [Why is it moving?]"
+        f"\n\n### DATA CONTEXT:\n{context_text}"
     )
-    
+
     try:
         chat = client_groq.chat.completions.create(
             messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_query}
+                {"role": "system", "content": system_instruction},
+                {"role": "user", "content": user_query},
             ],
             model=LLM_MODEL_NAME,
-            temperature=0.2
+            temperature=0.2, 
         )
-        return chat.choices[0].message.content, sources, dominant_ticker
+        return chat.choices[0].message.content, sources, dominant_ticker, horizon_seconds
     except Exception as e:
-        return f"❌ Erreur IA : {e}", sources, None
+        return f"🚨 AI Engine Error: {e}", sources, None, horizon_seconds
