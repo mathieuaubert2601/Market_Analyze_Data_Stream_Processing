@@ -5,6 +5,8 @@ import feedparser
 import urllib.parse
 from kafka import KafkaProducer
 import sys
+import datetime
+from datetime import datetime
 import os
 import pandas as pd
 import random
@@ -137,22 +139,27 @@ def send_history_data(producer: KafkaProducer, stock: yf.Ticker, ticker: str) ->
 def generate_intraday_metrics(stock: yf.Ticker, ticker: str) -> Optional[Dict]:
     """Calculate 10min, 1h, 6h variations."""
     try:
-        # We fetch 2 days of 5min data to ensure enough points
+        # We fetch 2 days of 5min data for historical variations
         df = stock.history(period="2d", interval="5m")
-        if df.empty or len(df) < 10: return None
+        if df.empty or len(df) < 10:  
+            return None
 
-        current_price = df['Close'].iloc[-1]
-
-        last_price_time = df. index[-1]
-        last_price_timestamp = int(last_price_time.timestamp())
-        last_price_datetime = last_price_time.strftime("%Y-%m-%d %H:%M:%S")
+        # ✅ CORRECTION : Utiliser fast_info pour le prix actuel/clôture
+        fast = stock.fast_info
+        current_price = fast.last_price  # ✅ Prix réel (17h35 si clôture)
         
-        # Definitions of indexes:
-        # 12 * 5min = 60min (1h)
-        # 72 * 5min = 360min (6h)
-        # 144 * 5min = 720min (12h - often unavailable in simple intraday if the market just opened)
+        # ✅ Timestamp du dernier prix (pas de la dernière bougie)
+        # fast_info n'a pas toujours regular_market_time, fallback sur info
+        try:
+            info = stock.info
+            last_price_timestamp = info.get('regularMarketTime', int(time.time()))
+        except:
+            last_price_timestamp = int(time.time())
         
-        intervals = { "10min": 2, "30min": 6, "1h": 12, "3h": 36, "6h": 72 }
+        last_price_datetime = datetime.fromtimestamp(last_price_timestamp).strftime("%Y-%m-%d %H:%M:%S")
+        
+        # ✅ Les variations utilisent toujours les bougies 5min (c'est correct)
+        intervals = {"10min": 2, "30min": 6, "1h": 12, "3h": 36, "6h": 72}
         metrics_text = f"Momentum Analysis {ticker} (Price: {current_price:.2f}):\n"
 
         for label, idx in intervals.items():
@@ -160,9 +167,9 @@ def generate_intraday_metrics(stock: yf.Ticker, ticker: str) -> Optional[Dict]:
                 past_price = df['Close'].iloc[-(idx+1)]
                 var_pct = ((current_price - past_price) / past_price) * 100 if past_price != 0 else 0
                 emoji = "🟩" if var_pct > 0 else "🟥" if var_pct < 0 else "⬜"
-                metrics_text += f"- {label}: {emoji} {var_pct:+.2f}%\n"
+                metrics_text += f"- {label}:  {emoji} {var_pct}%\n"
 
-        prev_close = stock.fast_info.previous_close
+        prev_close = fast.previous_close
         
         payload = {
             "ticker": ticker,
@@ -173,48 +180,54 @@ def generate_intraday_metrics(stock: yf.Ticker, ticker: str) -> Optional[Dict]:
             "publish_time": int(time.time()),
             "type": "intraday_metrics", 
             "source": "system_metrics",
-            "current_price": float(current_price),
+            "current_price": float(current_price),  # ✅ Prix correct
             "last_close": float(prev_close) if prev_close else 0.0,
-            "opening_price": float(df['Open'].iloc[-1]),
+            "opening_price": float(fast.open) if fast.open else 0.0,  # ✅ Open via fast_info
             "price_6h_ago": float(df['Close'].iloc[-(72+1)]) if len(df) > 73 else 0.0,
             "price_3h_ago": float(df['Close'].iloc[-(36+1)]) if len(df) > 37 else 0.0,
             "price_1h_ago": float(df['Close'].iloc[-(12+1)]) if len(df) > 13 else 0.0,
-            "price_30min_ago": float(df['Close'].iloc[-(6+1)]) if len(df) > 7 else 0.0,
+            "price_30min_ago": float(df['Close']. iloc[-(6+1)]) if len(df) > 7 else 0.0,
             "price_10min_ago": float(df['Close'].iloc[-(2+1)]) if len(df) > 3 else 0.0,
-            "regularMarketTime": last_price_timestamp,
-            "currency": stock.info.get('currency', 'UKN'),
-            "market_state": stock.info.get('marketState', 'UKN'),
+            "regularMarketTime": last_price_timestamp,  # ✅ Timestamp correct (17h35)
+            "currency": stock.info.get('currency', 'EUR'),
+            "market_state": stock.info.get('marketState', 'CLOSED'),
             "id": f"LATEST_METRICS_{ticker}"
         }
         return payload
-    except Exception as e:
+    except Exception as e: 
         print(f"⚠️ [Metrics] Erreur {ticker}: {e}")
-        return None
-    
+        return None 
 
 def analyze_technicals_daily(stock: yf.Ticker, ticker: str) -> Optional[Dict]:
     """Calculate daily technical indicators and generate a report."""
     try:
         hist = stock.history(period="1y") 
-        if hist.empty: return None
+        if hist.empty: 
+            return None
 
-        current = hist['Close'].iloc[-1]
-
-        last_price_date = hist.index[-1]
-        last_price_timestamp = int(last_price_date.timestamp())
-        last_price_datetime = last_price_date.strftime("%Y-%m-%d %H:%M:%S")
+        # ✅ CORRECTION : Utiliser fast_info pour le prix actuel
+        fast = stock.fast_info
+        current = fast.last_price  # ✅ Prix réel de clôture
         
+        # ✅ Timestamp correct
+        try:
+            info = stock.info
+            last_price_timestamp = info.get('regularMarketTime', int(time.time()))
+        except:
+            last_price_timestamp = int(time.time())
 
         ma_10 = hist['Close'].rolling(window=10).mean().iloc[-1]
         ma_50 = hist['Close'].rolling(window=50).mean().iloc[-1]
         ma_200 = hist['Close'].rolling(window=200).mean().iloc[-1]
         
         trend = "NEUTRAL"
-        if current > ma_50: trend = "BULLISH"
-        if current < ma_50: trend = "BEARISH"
+        if current > ma_50: 
+            trend = "BULLISH"
+        if current < ma_50: 
+            trend = "BEARISH"
 
         tech_text = (
-            f"Technical Analysis {ticker}. Price: {current:.2f}. "
+            f"Technical Analysis {ticker}.  Price: {current:.2f}. "
             f"Medium Term Trend (MA50): {trend}. "
             f"MA 50d: {ma_50:.2f}. "
             f"MA 200d: {ma_200:.2f}."
@@ -223,25 +236,24 @@ def analyze_technicals_daily(stock: yf.Ticker, ticker: str) -> Optional[Dict]:
         tech_payload = {
             "ticker": ticker,
             "title": f"Technical Analysis {ticker} ({trend})",
-            "summary": tech_text,
+            "summary":  tech_text,
             "content": tech_text,
             "link": f"https://finance.yahoo.com/quote/{ticker}",
-            "publish_time": int(time.time()),
+            "publish_time":  int(time.time()),
             "type": "technical",
-            "current_price": float(current),
-            "mean_10": float(ma_10) if not pd.isna(ma_10) else 0.0,
+            "current_price": float(current),  # ✅ Prix correct
+            "mean_10":  float(ma_10) if not pd.isna(ma_10) else 0.0,
             "mean_50": float(ma_50),
             "mean_200": float(ma_200) if not pd.isna(ma_200) else 0.0,
-            "regularMarketTime": last_price_timestamp,
-            "market_state": stock.info.get('marketState', 'UKN'),
-            "currency": stock.info.get('currency', 'UKN'),
+            "regularMarketTime": last_price_timestamp,  # ✅ Timestamp correct
+            "market_state": stock.info.get('marketState', 'CLOSED'),
+            "currency": stock.info.get('currency', 'EUR'),
             "id": f"LATEST_TECH_{ticker}"
         }
         return tech_payload
     except Exception as e:
-        print(f"⚠️ [Technical] Erreur {ticker}: {e}")
+        print(f"⚠️ [Technical] Erreur {ticker}:  {e}")
         return None
-
 
 def fetch_and_send_data(producer: KafkaProducer, seen_news: set) -> None:
     """Fetch data from Yahoo Finance and Google RSS, send to Kafka."""

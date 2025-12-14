@@ -219,9 +219,6 @@ def display_sidebar() -> None:
     st.sidebar.divider()
     st.sidebar.subheader("📈 Market Watch")
     
-    # ✅ Ajouter un disclaimer
-    st.sidebar.caption("⏱️ Données via Kafka (délai ~60s)")
-    
     market_data = get_sidebar_data()
     
     for item in market_data:
@@ -232,22 +229,13 @@ def display_sidebar() -> None:
             st.sidebar.divider()
             continue
         
-        # ✅ Calculer la fraîcheur
-        data_age = int(time.time() - item.get('regularMarketTime', 0))
-        if data_age > 300:  # > 5 minutes
-            freshness = f"🟠 {data_age // 60}min ago"
-        elif data_age > 120:  # > 2 minutes
-            freshness = f"🟡 {data_age // 60}min ago"
-        else:
-            freshness = "🟢 Fresh"
-        
         delta = ((item['price'] - item['prev']) / item['prev']) * 100 if item['prev'] else 0
         color_delta = "green" if delta >= 0 else "red"
         icon = "▲" if delta >= 0 else "▼"
         
         market_indicator = "🟢" if item['market_state'] == "REGULAR" else "🔴"
         
-        st.sidebar.markdown(f"**{item['ticker']}** {market_indicator} {freshness}")
+        st.sidebar.markdown(f"**{item['ticker']}** {market_indicator}")
         st.sidebar. markdown(
             f"{item['price']:.4f} {item['currency']} :{color_delta}[{icon} {delta:.2f}%]"
         )
@@ -349,7 +337,7 @@ with col2:
                         try:
                             dt = datetime.datetime.fromtimestamp(s['regularMarketTime'])
                             last_price_date = dt.strftime("%A %d/%m/%Y %H:%M")
-                            st.caption(f"⏰ Last Price Update: {last_price_date}")
+                            st.caption(f"Last Price Update: {last_price_date}")
                         except:
                             pass
 
@@ -447,6 +435,14 @@ with col2:
                 
                 with st.expander(f"{icon} {s['ticker']} - Intraday Metrics ({relative_time})"):
                     st.caption(f"📅 {s['date']} - Market: {market_display}")
+
+                    if s.get('regularMarketTime') and s['regularMarketTime'] != 0:
+                        try:
+                            dt = datetime.datetime.fromtimestamp(s['regularMarketTime'])
+                            last_price_date = dt.strftime("%A %d/%m/%Y %H:%M")
+                            st.caption(f"Last Price Update: {last_price_date}")
+                        except:
+                            pass
                     
                     # ✅ Utiliser 'title' au lieu de 'doc'
                     if s.get('title'):
