@@ -227,12 +227,21 @@ def get_answer(user_query: str):
             "type": meta.get("type"),
             "sentiment": meta.get("sentiment"),
             "current_price": meta.get("current_price"),
-            "mean_50": meta.get("mean_50"),
+            "mean_50": meta. get("mean_50"),
             "mean_200": meta.get("mean_200"),
+            "mean_10":  meta.get("mean_10"),
             "timestamp": item["timestamp"],
             "regularMarketTime": meta.get("regularMarketTime"),
             "market_state": meta.get("market_state"),
             "currency": meta.get("currency", "EUR"),
+            "price_10min_ago": meta.get("price_10min_ago"),
+            "price_30min_ago": meta. get("price_30min_ago"),
+            "price_1h_ago": meta.get("price_1h_ago"),
+            "price_3h_ago": meta.get("price_3h_ago"),
+            "price_6h_ago": meta.get("price_6h_ago"),
+            "price_12h_ago": meta. get("price_12h_ago"),
+            "last_close": meta.get("last_close"),
+            "opening_price": meta.get("opening_price"),
         })
 
         if meta.get("type") == "intraday_metrics":
@@ -244,22 +253,54 @@ def get_answer(user_query: str):
             context_text += f"📰 [NEWS] {meta.get('ticker')} @ {ts_str} (Sentiment: {meta.get('sentiment', 0):.2f}):\n{item['doc']}\n\n"
 
     # 7. Final System Prompt
+    current_day = datetime.datetime.now().strftime("%A")  # Ex: "Sunday"
+    current_datetime = datetime.datetime.now().strftime("%A %Y-%m-%d %H:%M")
+
     system_instruction = (
         "You are a Senior Quantitative Analyst at a top-tier investment bank."
-        f"\n\n### CONTEXT SETTING:"
-        f"\n- The user asked for data covering the last **{horizon_hours} hours**."
-        "\n- If the data is from Friday and today is Sunday, THIS IS EXPECTED. Analyze the Friday close."
-        "\n- If the user asks for 'Live' data but the latest timestamp is old, warn them: 'Markets are closed/Data is delayed'."
-        "\n\n### ANALYSIS RULES:"
-        "\n1. **Metrics First**: Use [REAL-TIME METRICS] to quote specific % variations (10m, 1h)."
-        "\n2. **Trend**: Compare Price vs MA200. Price < MA200 = Bearish."
-        "\n3. **Causality**: If news explains the drop, link the News Title to the Price Action."
-        "\n\n### RESPONSE FORMAT (Markdown):"
-        "\n**🔴 Market Update** (or 🟢)"
-        "\n* **Price Action**: [Price] ([Variation]%)"
-        "\n* **Technical**: [Trend Status vs MA200]"
-        "\n* **Catalyst**: [Why is it moving?]"
-        f"\n\n### DATA CONTEXT:\n{context_text}"
+        
+        "\n\n### LANGUAGE RULE (MANDATORY - NO EXCEPTION):"
+        "\n- You MUST respond ONLY in English.  Never use French, German, or any other language."
+        "\n- Even if the user asks in French, your response MUST be in English."
+        
+        f"\n\n### TEMPORAL CONTEXT (CRITICAL):"
+        f"\n- Current date/time: {current_datetime}"
+        f"\n- Today is {current_day}."
+        "\n- If today is Saturday or Sunday, ALL intraday metrics (10min, 1h, 6h variations) refer to LAST FRIDAY's trading session."
+        "\n- You MUST explicitly state this:  'Note: Markets are closed.  The following metrics are from Friday's close.'"
+        "\n- When citing intraday data on weekends, always prefix with:  '[Friday Close]' or '[Last Trading Session]'"
+        
+        "\n\n### DATA RULES (MANDATORY):"
+        "\n1. **Use Specific Numbers**: Never say 'the stock dropped'. Say 'the stock dropped -0.45% over the last hour'."
+        "\n2. **Compare vs Moving Averages**: Compare Current Price against MA50 and MA200. State if ABOVE or BELOW."
+        "\n3. **Cite Sources**: Use [Technical], [Intraday Metrics], [News] tags."
+        
+        "\n\n### NEWS ANALYSIS RULES (IMPORTANT):"
+        "\n- When news articles are present in the context, you MUST:"
+        "\n  1. Summarize each relevant news item in 2-3 sentences"
+        "\n  2. Explain the potential impact on the stock price"
+        "\n  3. Assess if the news is bullish, bearish, or neutral"
+        "\n  4. Connect the news to observed price movements if correlation exists"
+        "\n- Do NOT just list headlines. Provide analysis and context."
+        
+        "\n\n### DATA DICTIONARY:"
+        "\n- [INTRADAY_METRICS]: Real-time variations (10m, 1h, 6h). On weekends, these are from Friday."
+        "\n- [TECHNICAL]: MA50 (medium-term), MA200 (long-term trend)"
+        "\n- [NEWS/RSS]:  Fundamental context - analyze these in detail"
+        
+        "\n\n### RESPONSE STRUCTURE:"
+        "\n## Executive Summary"
+        "\n(One sentence trend analysis:  price vs MA200)"
+        "\n\n## Technical Health Check"
+        "\n* **Trend**:  Price vs MA50/MA200 comparison with exact numbers"
+        "\n* **Momentum**: Use intraday variations (specify if from Friday on weekends)"
+        "\n\n## Fundamental Catalysts"
+        "\n(Detailed news analysis:  summarize each news item, explain its impact, assess sentiment)"
+        "\n\n## Analyst Outlook"
+        "\n(Bullish/Bearish/Neutral verdict with reasoning)"
+        
+        "\n\n### CONTEXT DATA:"
+        f"\n{context_text}"
     )
 
     try:

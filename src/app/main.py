@@ -423,15 +423,12 @@ with col2:
                 relative_time = fmt_relative(s.get('timestamp'))
                 try:
                     market_state = s.get('market_state', 'CLOSED')
-                    if market_state == "REGULAR":
+                    if market_state == "REGULAR": 
                         market_display = "🟢 OPEN"
-                        market_color = "green"
                     else:
                         market_display = "🔴 CLOSED"
-                        market_color = "red"
                 except:
                     market_display = "❓ UNKNOWN"
-                    market_color = "gray"
                 
                 with st.expander(f"{icon} {s['ticker']} - Intraday Metrics ({relative_time})"):
                     st.caption(f"📅 {s['date']} - Market: {market_display}")
@@ -444,18 +441,40 @@ with col2:
                         except:
                             pass
                     
-                    # ✅ Utiliser 'title' au lieu de 'doc'
-                    if s.get('title'):
-                        content = s['title']
-                        
-                        # Nettoyer les **
-                        content = content.replace('**', '')
-                        
-                        # Remplacer les carrés colorés par des triangles
-                        content = content.replace('🟩', '▲')
-                        content = content.replace('🟥', '▼')
-                        
-                        st.write(content)
+                    # ✅ Prix actuel avec vérification
+                    current_price = s.get('current_price')
+                    currency = s.get('currency', 'EUR')
+                    
+                    if current_price and current_price != 0:
+                        st.markdown(f"**Momentum Analysis {s['ticker']} (Price: {float(current_price):.2f} {currency})**")
+                    else:
+                        st.markdown(f"**Momentum Analysis {s['ticker']}**")
+                    
+                    # ✅ Calcul et affichage des variations avec couleurs (même style que sidebar)
+                    variations_data = [
+                        ("10min", s.get('price_10min_ago')),
+                        ("30min", s.get('price_30min_ago')),
+                        ("1h", s.get('price_1h_ago')),
+                        ("3h", s.get('price_3h_ago')),
+                        ("6h", s.get('price_6h_ago')),
+                    ]
+                    
+                    has_variations = False
+                    for label, past_price in variations_data:
+                        if past_price and past_price != 0 and current_price and current_price != 0:
+                            var_pct = ((float(current_price) - float(past_price)) / float(past_price)) * 100
+                            
+                            # ✅ Même logique que sidebar
+                            color_var = "green" if var_pct >= 0 else "red"
+                            icon_var = "▲" if var_pct >= 0 else "▼"
+                            
+                            # ✅ Affichage avec couleur Streamlit
+                            st.markdown(f"- {label}:  :{color_var}[{icon_var} {var_pct:.2f}%]")
+                            has_variations = True
+                    
+                    # ✅ Message si pas de variations disponibles
+                    if not has_variations:
+                        st.caption("⏳ Variations non disponibles")
                     
                     # Link minimal
                     if s.get('link') and s['link'] != "#":
