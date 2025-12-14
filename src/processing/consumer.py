@@ -100,23 +100,8 @@ def process_history(data: dict) -> None:
             df = df[~df.index.duplicated(keep="last")]
             df.sort_index(inplace=True)
         else:
-            # ✅ À la première ligne : charger 6 mois d'historique yfinance
-            import yfinance as yf
-            from datetime import datetime, timedelta
-            
-            try:
-                end_date = datetime.now()
-                start_date = end_date - timedelta(days=180)
-                hist_data = yf.download(ticker, start=start_date, end=end_date, progress=False)
-                
-                if not hist_data.empty:
-                    hist_data.index.name = 'date'
-                    df = hist_data
-                    print(f"✅ Loaded {len(df)} days of history for {ticker}")
-                else:
-                    df = new_row
-            except:
-                df = new_row
+            df = new_row
+            print(f"📄 Created new history file for {ticker}")
             
         df.to_csv(csv_file)
         

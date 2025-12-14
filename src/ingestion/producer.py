@@ -324,12 +324,47 @@ def fetch_and_send_data(producer: KafkaProducer, seen_news: set) -> None:
 
     producer.flush()
 
-if __name__ == "__main__":
+def send_initial_history(producer:  KafkaProducer, ticker: str, days: int = 180) -> None:
+    """Send historical data for a ticker at startup (one-time)."""
+    try:
+        stock = yf.Ticker(ticker)
+        hist = stock.history(period=f"{days}d")
+        
+        if hist.empty:
+            print(f"⚠️ [History] No data for {ticker}")
+            return
+        
+        for date, row in hist.iterrows():
+            history_payload = {
+                "ticker": ticker,
+                "date": str(date),
+                "Open": float(row['Open']),
+                "High": float(row['High']),
+                "Low": float(row['Low']),
+                "Close": float(row['Close']),
+                "Volume": int(row['Volume'])
+            }
+            producer.send(KAFKA_TOPIC_HISTORY, value=history_payload)
+        
+        print(f"✅ [History] Sent {len(hist)} days for {ticker}")
+        
+    except Exception as e: 
+        print(f"❌ [History] Error {ticker}: {e}")
+
+if __name__ == "__main__": 
     producer = create_producer()
-    seen = set() # Set partagé entre Yahoo et Google pour les IDs
+    seen = set()
+    
     if producer:
+        # ✅ Envoi initial de l'historique (une seule fois)
+        print("📊 [Producer] Sending initial history data...")
+        for ticker in TICKERS:
+            send_initial_history(producer, ticker, days=180)
+        producer.flush()
+        print("✅ [Producer] Initial history sent!")
+        
+        # ✅ Boucle normale de streaming
         while True:
             fetch_and_send_data(producer, seen)
-
             print(f"💤 Pause {SLEEP_TIME}s...")
             time.sleep(SLEEP_TIME)

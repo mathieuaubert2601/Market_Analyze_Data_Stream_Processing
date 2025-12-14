@@ -1,7 +1,6 @@
 import time
 import os
 import streamlit as st
-import yfinance as yf
 import pandas as pd
 import plotly.graph_objects as go
 import datetime
@@ -145,116 +144,129 @@ def display_stock_chart(ticker: str) -> None:
     except Exception as e:  
         st. error(f"Chart Error: {e}")
         
-# --- SIDEBAR: PIPELINE STATUS & MARKET WATCH ---
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=30)  # ✅ Réduire le TTL à 30s pour plus de fraîcheur
 def get_sidebar_data() -> list[dict]:
-    """Fetches latest data from ChromaDB (Consumer) instead of yfinance."""
+    """Fetches latest intraday metrics from ChromaDB (via Kafka hot-news-events)."""
     results = []
     
     try:
-        chroma_client = chromadb.PersistentClient(path=CHROMA_PATH)
+        chroma_client = chromadb. PersistentClient(path=CHROMA_PATH)
         collection = chroma_client.get_collection(name=COLLECTION_NAME)
-    except:
-        # Fallback to yfinance if ChromaDB fails
-        for ticker in TICKERS:
-            try:
-                stock = yf.Ticker(ticker)
-                info = stock.fast_info
-                results.append({
-                    "ticker": ticker,
-                    "price": info.last_price,
-                    "prev": info.previous_close,
-                    "currency": info.currency,
-                    "market_state": stock.info.get("marketState", "CLOSED"),
-                    "mean_50": 0,
-                    "mean_200": 0,
-                    "sentiment": 0
-                })
-            except:
-                pass
-        return results
+    except Exception as e:
+        st.sidebar.warning(f"⚠️ ChromaDB unavailable: waiting for Kafka data...")
+        return []
     
-    # Récupérer les dernières données du consumer pour chaque ticker
     for ticker in TICKERS:
         try:
+            # ✅ Priorité aux métriques intraday (prix le plus récent)
             results_chroma = collection.query(
-                query_texts=[ticker],
-                where={"ticker": {"$eq": ticker}},
+                query_texts=[f"Momentum Intraday {ticker}"],
+                where={
+                    "$and": [
+                        {"ticker":  {"$eq": ticker}},
+                        {"type": {"$eq": "intraday_metrics"}}  # ✅ Filtrer sur le type
+                    ]
+                },
                 n_results=1,
                 include=["metadatas"]
             )
             
-            if results_chroma["metadatas"] and results_chroma["metadatas"][0]:
+            if results_chroma["metadatas"] and results_chroma["metadatas"][0]: 
                 meta = results_chroma["metadatas"][0][0]
                 
-                # Récupérer le prix actuel et précédent
                 current_price = meta.get("current_price", 0)
                 prev_close = meta.get("last_close", current_price)
                 
                 results.append({
                     "ticker": ticker,
                     "price": current_price,
-                    "prev": prev_close if prev_close else current_price,
-                    "currency": meta.get("currency", "UKN"),
-                    "market_state": meta.get("market_state", "UKN"),
+                    "prev":  prev_close if prev_close else current_price,
+                    "currency": meta.get("currency", "EUR"),
+                    "market_state": meta.get("market_state", "CLOSED"),
                     "mean_50": meta.get("mean_50", 0),
                     "mean_200": meta.get("mean_200", 0),
                     "sentiment": meta.get("sentiment", 0),
                     "regularMarketTime": meta.get("regularMarketTime", 0)
                 })
-        except Exception as e:
+            else:
+                # ✅ Ticker sans données = afficher placeholder
+                results.append({
+                    "ticker": ticker,
+                    "price": 0,
+                    "prev": 0,
+                    "currency": "---",
+                    "market_state": "WAITING",
+                    "mean_50":  0,
+                    "mean_200": 0,
+                    "sentiment": 0,
+                    "regularMarketTime":  0
+                })
+                
+        except Exception as e: 
             print(f"[Sidebar] Error fetching {ticker}: {e}")
     
     return results
 
 def display_sidebar() -> None:
     """Displays the sidebar with system status and market watch."""
-    # --- PIPELINE STATUS ---
     status, color = check_system_health()
-    st.sidebar.markdown(f"### Pipeline Status: :{color}[{status}]")
+    st.sidebar.markdown(f"### Pipeline Status:  :{color}[{status}]")
     
     if st.sidebar.button("🔄 Refresh Data"):
+        get_sidebar_data. clear()  # ✅ Vider le cache
         st.rerun()
     
-    st.sidebar. divider()
-    
-    # --- MARKET WATCH ---
+    st.sidebar.divider()
     st.sidebar.subheader("📈 Market Watch")
+    
+    # ✅ Ajouter un disclaimer
+    st.sidebar.caption("⏱️ Données via Kafka (délai ~60s)")
+    
     market_data = get_sidebar_data()
     
     for item in market_data:
-        delta = ((item['price'] - item['prev']) / item['prev']) * 100
+        # ✅ Gérer le cas "en attente"
+        if item['market_state'] == "WAITING":
+            st.sidebar.markdown(f"**{item['ticker']}** ⏳")
+            st.sidebar.caption("En attente des données Kafka...")
+            st.sidebar.divider()
+            continue
+        
+        # ✅ Calculer la fraîcheur
+        data_age = int(time.time() - item.get('regularMarketTime', 0))
+        if data_age > 300:  # > 5 minutes
+            freshness = f"🟠 {data_age // 60}min ago"
+        elif data_age > 120:  # > 2 minutes
+            freshness = f"🟡 {data_age // 60}min ago"
+        else:
+            freshness = "🟢 Fresh"
+        
+        delta = ((item['price'] - item['prev']) / item['prev']) * 100 if item['prev'] else 0
         color_delta = "green" if delta >= 0 else "red"
         icon = "▲" if delta >= 0 else "▼"
         
-        # Market State Indicator
         market_indicator = "🟢" if item['market_state'] == "REGULAR" else "🔴"
         
-        # ✅ LINE 1: Ticker + Market State
-        st.sidebar.markdown(f"**{item['ticker']}** {market_indicator}")
-        
-        # ✅ LINE 2: Price + Currency + Evolution %
-        st.sidebar.markdown(
+        st.sidebar.markdown(f"**{item['ticker']}** {market_indicator} {freshness}")
+        st.sidebar. markdown(
             f"{item['price']:.4f} {item['currency']} :{color_delta}[{icon} {delta:.2f}%]"
         )
         
-        # ✅ LINE 3: Date and Time of last price
+        # Date/heure du dernier prix
         try:
             last_price_time = item.get('regularMarketTime')
-            if last_price_time:
-                if isinstance(last_price_time, int):
-                    from datetime import datetime
-                    dt = datetime.fromtimestamp(last_price_time)
-                    time_str = dt. strftime("%A %d/%m/%Y %H:%M")
-                else:
-                    time_str = str(last_price_time)
+            if last_price_time and last_price_time > 0:
+                from datetime import datetime
+                dt = datetime.fromtimestamp(last_price_time)
+                time_str = dt.strftime("%d/%m/%Y %H:%M")
             else:
                 time_str = "N/A"
-        except: 
+        except:
             time_str = "N/A"
         
         st.sidebar.caption(f"📅 {time_str}")
         st.sidebar.divider()
+        
 display_sidebar()
 
 # --- MAIN LAYOUT ---
@@ -422,8 +434,7 @@ with col2:
                 icon = "📊"
                 relative_time = fmt_relative(s.get('timestamp'))
                 try:
-                    stock = yf.Ticker(s['ticker'])
-                    market_state = stock.info.get("marketState", "CLOSED")
+                    market_state = s.get('market_state', 'CLOSED')
                     if market_state == "REGULAR":
                         market_display = "🟢 OPEN"
                         market_color = "green"
