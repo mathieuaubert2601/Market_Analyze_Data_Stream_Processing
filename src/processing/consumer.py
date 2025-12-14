@@ -100,68 +100,93 @@ def process_history(data: dict) -> None:
             df = df[~df.index.duplicated(keep="last")]
             df.sort_index(inplace=True)
         else:
-            df = new_row
+            # ✅ À la première ligne : charger 6 mois d'historique yfinance
+            import yfinance as yf
+            from datetime import datetime, timedelta
+            
+            try:
+                end_date = datetime.now()
+                start_date = end_date - timedelta(days=180)
+                hist_data = yf.download(ticker, start=start_date, end=end_date, progress=False)
+                
+                if not hist_data.empty:
+                    hist_data.index.name = 'date'
+                    df = hist_data
+                    print(f"✅ Loaded {len(df)} days of history for {ticker}")
+                else:
+                    df = new_row
+            except:
+                df = new_row
             
         df.to_csv(csv_file)
         
     except Exception as e:
         print(f"[Consumer] Error CSV {ticker}: {e}")
 
-
-def process_news(data: dict) -> None:
-    """Embeds and inserts News/Metrics/Technicals into ChromaDB."""
+def process_news(data):
     try:
-        title = data.get("title", "")
+        title = data.get('title', "")
         if not title: return
 
-        ticker = data.get("ticker", "UNKNOWN")
-        doc_type = data.get("type", "news")
-        publish_time = data.get("publish_time", 0) or 0
-        now = time.time()
-
-        # --- TTL FILTER (Time To Live) ---
-        # Don't store old data to keep the index fast and relevant
-        age = now - publish_time
-        if doc_type == "intraday_metrics" and age > TTL_INTRADAY:
-            return # Too old
-        if doc_type == "news" and age > TTL_NEWS:
-            return # Too old
-
-        # --- ID GENERATION ---
-        # Unique IDs ensure we update existing records instead of duplicating
-        if doc_type == "technical":
+        ticker = data.get('ticker', 'UNKNOWN')
+        doc_type = data.get('type', 'news')
+        
+        # --- LOGIQUE ANTI-DOUBLON ---
+        if doc_type == 'technical':
             unique_id = f"LATEST_TECH_{ticker}"
-        elif doc_type == "intraday_metrics":
+        elif doc_type == 'intraday_metrics':
             unique_id = f"LATEST_METRICS_{ticker}"
-        else:
-            # Hash ID for general news to avoid duplicates from RSS
-            raw_id = data.get("id") or str(hash(title))
+        else: 
+            raw_id = data.get('id')
+            if not raw_id:
+                raw_id = str(hash(title))
             unique_id = f"NEWS_{ticker}_{raw_id}"
 
-        # --- EMBEDDING ---
-        text_for_sentiment = data.get("summary") or title
-        sentiment = analyzer.polarity_scores(text_for_sentiment)["compound"]
+        # ✅ AMÉLIORATION: Utiliser title + summary + content pour le sentiment
+        text_for_sentiment = data.get('summary', title)
+        if data.get('content'):
+            text_for_sentiment = f"{title}. {data.get('content')}"
+            
+        sentiment_scores = analyzer.polarity_scores(text_for_sentiment)
+        sentiment = sentiment_scores['compound']
         
-        # The text we actually vectorise
-        text_embed = f"{ticker} ({doc_type}): {title}"
+        # ✅ DEBUG: Afficher les scores VADER
+        print(f"DEBUG [{ticker}] Sentiment: {sentiment:.3f} | Scores: {sentiment_scores}")
+        
+        # Embedding sur le titre + ticker
+        text_embed = f"{ticker}: {title}"
         vector = embedding_model.encode(text_embed).tolist()
-
-        # --- CLEAN METADATA ---
-        safe_meta = clean_metadata(data, sentiment)
-
-        # --- UPSERT TO CHROMA ---
+        
+        # Upsert
         collection.upsert(
             ids=[unique_id],
             embeddings=[vector],
-            documents=[data.get("content", title)], # The content returned to LLM
-            metadatas=[safe_meta]
+            documents=[data.get('content', title)],
+            metadatas=[{
+                "ticker": ticker,
+                "timestamp": data.get('publish_time', 0),
+                "current_price": float(data['current_price']) if data.get('current_price') else 0.0,
+                "mean_200": float(data['mean_200']) if data.get('mean_200') else 0.0,
+                "mean_50": float(data['mean_50']) if data.get('mean_50') else 0.0,
+                "mean_10":  float(data['mean_10']) if data.get('mean_10') else 0.0,
+                "price_12h_ago": float(data['price_12h_ago']) if data.get('price_12h_ago') else 0.0,
+                "price_6h_ago": float(data['price_6h_ago']) if data.get('price_6h_ago') else 0.0,
+                "price_3h_ago": float(data['price_3h_ago']) if data.get('price_3h_ago') else 0.0,
+                "price_1h_ago": float(data['price_1h_ago']) if data.get('price_1h_ago') else 0.0,
+                "price_30min_ago": float(data['price_30min_ago']) if data.get('price_30min_ago') else 0.0,
+                "price_10min_ago": float(data['price_10min_ago']) if data.get('price_10min_ago') else 0.0,
+                "last_close": float(data['last_close']) if data.get('last_close') else 0.0,
+                "opening_price": float(data['opening_price']) if data.get('opening_price') else 0.0,
+                "content": data.get('summary', title),
+                "sentiment": sentiment,
+                "doc":  title,
+                "link": data.get('link', '#')
+            }]
         )
-        
-        print(f"[RAG] Indexed: {ticker} | Type: {doc_type} | ID: {unique_id}")
+        print(f"✅ [RAG] Traité : {ticker} ({doc_type}) - Sentiment: {sentiment:.2f}")
 
     except Exception as e:
-        print(f"[Consumer] Error processing RAG item ({ticker}): {e}")
-
+        print(f"❌ Erreur RAG ({ticker}): {e}")
 
 if __name__ == "__main__":
     
