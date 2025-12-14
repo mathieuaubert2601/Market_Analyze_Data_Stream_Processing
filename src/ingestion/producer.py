@@ -142,6 +142,10 @@ def generate_intraday_metrics(stock: yf.Ticker, ticker: str) -> Optional[Dict]:
         if df.empty or len(df) < 10: return None
 
         current_price = df['Close'].iloc[-1]
+
+        last_price_time = df. index[-1]
+        last_price_timestamp = int(last_price_time.timestamp())
+        last_price_datetime = last_price_time.strftime("%Y-%m-%d %H:%M:%S")
         
         # Definitions of indexes:
         # 12 * 5min = 60min (1h)
@@ -177,6 +181,9 @@ def generate_intraday_metrics(stock: yf.Ticker, ticker: str) -> Optional[Dict]:
             "price_1h_ago": float(df['Close'].iloc[-(12+1)]) if len(df) > 13 else 0.0,
             "price_30min_ago": float(df['Close'].iloc[-(6+1)]) if len(df) > 7 else 0.0,
             "price_10min_ago": float(df['Close'].iloc[-(2+1)]) if len(df) > 3 else 0.0,
+            "regularMarketTime": last_price_timestamp,
+            "currency": stock.info.get('currency', 'UKN'),
+            "market_state": stock.info.get('marketState', 'UKN'),
             "id": f"LATEST_METRICS_{ticker}"
         }
         return payload
@@ -192,6 +199,12 @@ def analyze_technicals_daily(stock: yf.Ticker, ticker: str) -> Optional[Dict]:
         if hist.empty: return None
 
         current = hist['Close'].iloc[-1]
+
+        last_price_date = hist.index[-1]
+        last_price_timestamp = int(last_price_date.timestamp())
+        last_price_datetime = last_price_date.strftime("%Y-%m-%d %H:%M:%S")
+        
+
         ma_10 = hist['Close'].rolling(window=10).mean().iloc[-1]
         ma_50 = hist['Close'].rolling(window=50).mean().iloc[-1]
         ma_200 = hist['Close'].rolling(window=200).mean().iloc[-1]
@@ -219,6 +232,9 @@ def analyze_technicals_daily(stock: yf.Ticker, ticker: str) -> Optional[Dict]:
             "mean_10": float(ma_10) if not pd.isna(ma_10) else 0.0,
             "mean_50": float(ma_50),
             "mean_200": float(ma_200) if not pd.isna(ma_200) else 0.0,
+            "regularMarketTime": last_price_timestamp,
+            "market_state": stock.info.get('marketState', 'UKN'),
+            "currency": stock.info.get('currency', 'UKN'),
             "id": f"LATEST_TECH_{ticker}"
         }
         return tech_payload
@@ -291,10 +307,12 @@ def fetch_and_send_data(producer: KafkaProducer, seen_news: set) -> None:
                             "publish_time": pub_ts,
                             "type": "news",
                             "source": "yahoo_api",
+                            "market_state": stock.info.get('marketState', 'UKN'),
+                            "currency": stock.info.get('currency', 'UKN'),
                             "id": news_id
                         }
                         producer.send(KAFKA_TOPIC_NEWS, value=news_payload)
-                        print(f"📰 [Yahoo] {ticker} : {title[:20]}...")
+                        print(f"📰 [Yahoo] {ticker} :{title[:20]}...")
                         seen_news.add(news_id)
 
         except Exception as e:

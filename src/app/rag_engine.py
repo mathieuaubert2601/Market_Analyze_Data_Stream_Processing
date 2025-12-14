@@ -218,7 +218,7 @@ def get_answer(user_query: str):
         # Show full date if looking back days, else just time
         fmt = "%H:%M:%S" if horizon_hours < 24 else "%Y-%m-%d %H:%M"
         ts_str = datetime.datetime.fromtimestamp(item["timestamp"]).strftime(fmt)
-        
+
         sources.append({
             "ticker": meta.get("ticker"),
             "title": item["doc"],
@@ -229,7 +229,10 @@ def get_answer(user_query: str):
             "current_price": meta.get("current_price"),
             "mean_50": meta.get("mean_50"),
             "mean_200": meta.get("mean_200"),
-            "timestamp": item["timestamp"]
+            "timestamp": item["timestamp"],
+            "regularMarketTime": meta.get("regularMarketTime"),
+            "market_state": meta.get("market_state"),
+            "currency": meta.get("currency", "EUR"),
         })
 
         if meta.get("type") == "intraday_metrics":

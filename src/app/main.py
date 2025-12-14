@@ -7,6 +7,8 @@ import plotly.graph_objects as go
 import datetime
 from rag_engine import get_answer
 from src.config import TICKERS, HISTORY_PATH
+import chromadb
+from src.config import TICKERS, HISTORY_PATH, CHROMA_PATH, COLLECTION_NAME
 
 # --- CONFIGURATION ---
 st.set_page_config(
@@ -146,22 +148,63 @@ def display_stock_chart(ticker: str) -> None:
 # --- SIDEBAR: PIPELINE STATUS & MARKET WATCH ---
 @st.cache_data(ttl=60)
 def get_sidebar_data() -> list[dict]:
-    """Fetches live price snapshots for sidebar (Cached)."""
+    """Fetches latest data from ChromaDB (Consumer) instead of yfinance."""
     results = []
+    
+    try:
+        chroma_client = chromadb.PersistentClient(path=CHROMA_PATH)
+        collection = chroma_client.get_collection(name=COLLECTION_NAME)
+    except:
+        # Fallback to yfinance if ChromaDB fails
+        for ticker in TICKERS:
+            try:
+                stock = yf.Ticker(ticker)
+                info = stock.fast_info
+                results.append({
+                    "ticker": ticker,
+                    "price": info.last_price,
+                    "prev": info.previous_close,
+                    "currency": info.currency,
+                    "market_state": stock.info.get("marketState", "CLOSED"),
+                    "mean_50": 0,
+                    "mean_200": 0,
+                    "sentiment": 0
+                })
+            except:
+                pass
+        return results
+    
+    # Récupérer les dernières données du consumer pour chaque ticker
     for ticker in TICKERS:
         try:
-            stock = yf.Ticker(ticker)
-            info = stock.fast_info
-            market_state = stock.info.get("marketState", "CLOSED")
-            results.append({
-                "ticker": ticker,
-                "price": info.last_price,
-                "prev": info.previous_close,
-                "currency": info.currency,
-                "market_state": market_state
-            })
-        except:
-            pass
+            results_chroma = collection.query(
+                query_texts=[ticker],
+                where={"ticker": {"$eq": ticker}},
+                n_results=1,
+                include=["metadatas"]
+            )
+            
+            if results_chroma["metadatas"] and results_chroma["metadatas"][0]:
+                meta = results_chroma["metadatas"][0][0]
+                
+                # Récupérer le prix actuel et précédent
+                current_price = meta.get("current_price", 0)
+                prev_close = meta.get("last_close", current_price)
+                
+                results.append({
+                    "ticker": ticker,
+                    "price": current_price,
+                    "prev": prev_close if prev_close else current_price,
+                    "currency": meta.get("currency", "UKN"),
+                    "market_state": meta.get("market_state", "UKN"),
+                    "mean_50": meta.get("mean_50", 0),
+                    "mean_200": meta.get("mean_200", 0),
+                    "sentiment": meta.get("sentiment", 0),
+                    "regularMarketTime": meta.get("regularMarketTime", 0)
+                })
+        except Exception as e:
+            print(f"[Sidebar] Error fetching {ticker}: {e}")
+    
     return results
 
 def display_sidebar() -> None:
@@ -197,8 +240,7 @@ def display_sidebar() -> None:
         
         # ✅ LINE 3: Date and Time of last price
         try:
-            stock = yf.Ticker(item['ticker'])
-            last_price_time = stock.info.get('regularMarketTime')
+            last_price_time = item.get('regularMarketTime')
             if last_price_time:
                 if isinstance(last_price_time, int):
                     from datetime import datetime
@@ -218,6 +260,17 @@ display_sidebar()
 # --- MAIN LAYOUT ---
 col1, col2 = st.columns([2, 1])
 
+# --- MAIN LAYOUT ---
+col1, col2 = st.columns([2, 1])
+
+# ✅ Initialize session state for sources
+if 'sources' not in st.session_state:
+    st.session_state.sources = None
+if 'answer' not in st.session_state:
+    st.session_state.answer = None
+if 'ticker' not in st.session_state:
+    st.session_state.ticker = None
+
 with col1:
     # --- AI ANALYST SECTION ---
     with st.container():
@@ -232,6 +285,10 @@ with col1:
     if submit and query:
         with st.spinner("🧠 Agent is analyzing Kafka streams..."):
             answer, sources, ticker, horizon = get_answer(query)
+            
+            st.session_state.sources = sources
+            st.session_state.answer = answer
+            st.session_state.ticker = ticker
             
             # Display Analysis Mode
             horizon_hours = round(horizon / 3600, 1)
@@ -251,17 +308,17 @@ with col1:
 with col2:
     st.subheader("📡 Context Sources")
     
-    if 'sources' in locals() and sources:
-        for s in sources:
+    # ✅ CHECK SESSION STATE INSTEAD OF LOCALS()
+    if st.session_state.sources:
+        for s in st.session_state.sources:
             # --- TECHNICAL ANALYSIS SOURCE ---
-            if s['type'] == 'technical':  
+            if s['type'] == 'technical':   
                 icon = "📈"
-                relative_time = fmt_relative(s. get('timestamp'))
+                relative_time = fmt_relative(s.get('timestamp'))
                 
                 # ✅ RÉCUPÉRER L'ÉTAT RÉEL DU MARCHÉ
                 try:
-                    stock = yf.Ticker(s['ticker'])
-                    market_state = stock.info.get("marketState", "CLOSED")
+                    market_state = s.get('market_state', 'UKN')
                     if market_state == "REGULAR":
                         market_display = "🟢 OPEN"
                         market_color = "green"
@@ -275,7 +332,15 @@ with col2:
                 with st.expander(f"{icon} {s['ticker']} - Technical Analysis ({relative_time})"):
                     # En-tête compact
                     st.caption(f"📅 {s['date']} | :{market_color}[{market_display}]")
-                    
+
+                    if s.get('regularMarketTime') and s['regularMarketTime'] != 0:
+                        try:
+                            dt = datetime.datetime.fromtimestamp(s['regularMarketTime'])
+                            last_price_date = dt.strftime("%A %d/%m/%Y %H:%M")
+                            st.caption(f"⏰ Last Price Update: {last_price_date}")
+                        except:
+                            pass
+
                     # ✅ CURRENT PRICES - Sans titre séparé
                     price_parts = []
                     if s.get('current_price'):
@@ -285,14 +350,14 @@ with col2:
                     if s.get('opening_price'):
                         price_parts.append(f"Open: {fmt(s['opening_price'])}")
                     if price_parts:
-                        st.write(" | ".join(price_parts))
+                        st. write(" | ".join(price_parts))
                     
                     # ✅ TECHNICAL LEVELS - Sur une ligne
                     ma_parts = []
-                    if s.get('mean_10'):
+                    if s. get('mean_10'):
                         ma_parts.append(f"MA10: {fmt(s['mean_10'])}")
                     if s.get('mean_50'):
-                        ma_parts.append(f"MA50: {fmt(s['mean_50'])}")
+                        ma_parts. append(f"MA50: {fmt(s['mean_50'])}")
                     if s.get('mean_200'):
                         ma_parts.append(f"MA200: {fmt(s['mean_200'])}")
                     if ma_parts:
@@ -340,7 +405,7 @@ with col2:
                             elif sentiment_float < -0.5:
                                 sentiment_label = "🔴 Negative"
                                 sentiment_color = "red"
-                            else: 
+                            else:  
                                 sentiment_label = "⚪ Neutral"
                                 sentiment_color = "gray"
                             
@@ -388,10 +453,8 @@ with col2:
                     # Link minimal
                     if s.get('link') and s['link'] != "#":
                         st.markdown(f"[📖 View details]({s['link']})")
-                
+            
             else:
                 st.info("📌 Sources will appear here after analysis.")
-
-# --- FOOTER ---
-st. markdown("---")
-st.caption("🏗️ Architecture: Kafka Stream → Consumer → ChromaDB → Llama 3 (Groq) | Real-Time Market Data")
+    else:
+        st.info("📌 Sources will appear here after analysis.")

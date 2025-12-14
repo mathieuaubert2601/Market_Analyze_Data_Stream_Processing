@@ -62,7 +62,7 @@ def clean_metadata(data: dict, sentiment_score: float) -> dict:
     float_keys = [
         "publish_time", "current_price", "mean_200", "mean_50", "mean_10",
         "price_12h_ago", "price_6h_ago", "price_3h_ago", "price_1h_ago",
-        "price_30min_ago", "price_10min_ago", "last_close", "opening_price"
+        "price_30min_ago", "price_10min_ago", "last_close", "opening_price","regularMarketTime"
     ]
     
     for key in float_keys:
@@ -179,11 +179,15 @@ def process_news(data):
                 "opening_price": float(data['opening_price']) if data.get('opening_price') else 0.0,
                 "content": data.get('summary', title),
                 "sentiment": sentiment,
+                "regularMarketTime": int(data.get('regularMarketTime', 0)),
+                "market_state": data.get('market_state', 'REGULAR'),
+                "currency": data.get('currency', 'UKN'),
                 "doc":  title,
-                "link": data.get('link', '#')
+                "link": data.get('link', '#'),
+                "type": doc_type
             }]
         )
-        print(f"✅ [RAG] Traité : {ticker} ({doc_type}) - Sentiment: {sentiment:.2f}")
+        print(f"✅ [RAG] Traité : {ticker} ({doc_type}) - Currency: {data.get('currency', 'UKN')} - Sentiment: {sentiment:.2f}")
 
     except Exception as e:
         print(f"❌ Erreur RAG ({ticker}): {e}")
