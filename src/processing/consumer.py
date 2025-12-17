@@ -14,15 +14,16 @@ from src.config import (
     KAFKA_TOPIC_NEWS,
     KAFKA_TOPIC_HISTORY,
     KAFKA_TOPIC_HOT_NEWS,
+    KAFKA_TOPIC_DAILY_SUMMARY,
     CHROMA_PATH,
     HISTORY_PATH,
     COLLECTION_NAME,
     EMBEDDING_MODEL_NAME,
-    TTL_NEWS,
-    TTL_INTRADAY,
 )
 
-# --- SETUP ---
+RETENTION_DAYS = 30
+RETENTION_SECONDS = RETENTION_DAYS * 24 * 3600
+
 print("[Consumer] Loading AI Models (Embeddings + Sentiment)...")
 embedding_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
 analyzer = SentimentIntensityAnalyzer()
@@ -37,177 +38,184 @@ os.makedirs(HISTORY_PATH, exist_ok=True)
 def update_heartbeat() -> None:
     """Touch a file to indicate the consumer is alive."""
     try:
-        with open(os.path.join(HISTORY_PATH, "consumer_heartbeat.txt"), "w") as f:
+        heartbeat_file = os.path.join(HISTORY_PATH, "consumer_heartbeat.txt")
+        with open(heartbeat_file, "w") as f:
             f.write(str(time.time()))
     except Exception:
         pass
 
 
 def clean_metadata(data: dict, sentiment_score: float) -> dict:
-    """
-    Strict cleaning of metadata for ChromaDB.
-    Chroma crashes if metadata contains None or wrong types.
-    """
+    """Clean and validate metadata for ChromaDB storage."""
     meta = {}
-    
-    # 1. Strings (Ensure no None)
+
     meta["ticker"] = str(data.get("ticker", "UNKNOWN"))
     meta["type"] = str(data.get("type", "news"))
     meta["source"] = str(data.get("source", "unknown"))
-    meta["doc"] = str(data.get("title", ""))[:50]
+    meta["doc"] = str(data.get("title", ""))[:150]
     meta["link"] = str(data.get("link", "#"))
-    
-    # 2. Floats (Ensure no None or Strings)
-    # List of all numeric fields expected by RAG Engine
+    meta["market_state"] = str(data.get("market_state", "REGULAR"))
+    meta["currency"] = str(data.get("currency", "UKN"))
+
     float_keys = [
         "publish_time", "current_price", "mean_200", "mean_50", "mean_10",
         "price_12h_ago", "price_6h_ago", "price_3h_ago", "price_1h_ago",
-        "price_30min_ago", "price_10min_ago", "last_close", "opening_price","regularMarketTime"
+        "price_30min_ago", "price_10min_ago", "last_close", "opening_price",
+        "regularMarketTime", "timestamp"
     ]
-    
+
     for key in float_keys:
         val = data.get(key)
         try:
-            # Convert to float, default to 0.0 if None or error
-            meta[key] = float(val) if val is not None else 0.0
-        except:
+            if val is None or val == "":
+                meta[key] = 0.0
+            else:
+                meta[key] = float(val)
+        except (ValueError, TypeError):
             meta[key] = 0.0
 
-    # Add calculated fields
-    meta["timestamp"] = meta["publish_time"] # for RAG Time Decay
+    if meta["timestamp"] == 0.0 and meta["publish_time"] > 0:
+        meta["timestamp"] = meta["publish_time"]
+
     meta["sentiment"] = float(sentiment_score)
-    
+
     return meta
 
 
 def process_history(data: dict) -> None:
-    """Stores OHLCV history in CSV for charts."""
+    """Store OHLCV history in CSV files for charts."""
     ticker = data.get("ticker")
     date = data.get("date")
-    
+
     if not ticker or not date:
         return
 
     csv_file = os.path.join(HISTORY_PATH, f"{ticker}.csv")
-    
+
     try:
         new_row = pd.DataFrame([data]).set_index("date")
-        
+
         if os.path.exists(csv_file):
             df = pd.read_csv(csv_file, index_col="date")
             df = pd.concat([df, new_row])
-            # Remove duplicates keeping the last (fresher) one
             df = df[~df.index.duplicated(keep="last")]
             df.sort_index(inplace=True)
         else:
             df = new_row
             print(f"📄 Created new history file for {ticker}")
-            
+
         df.to_csv(csv_file)
-        
+
     except Exception as e:
         print(f"[Consumer] Error CSV {ticker}: {e}")
 
-def process_news(data):
+
+def enforce_retention_policy(ticker: str) -> None:
+    """Delete daily_summary older than 30 days from ChromaDB."""
+    try:
+        cutoff_time = time.time() - RETENTION_SECONDS
+
+        collection.delete(
+            where={
+                "$and": [
+                    {"type": {"$eq": "daily_summary"}},
+                    {"ticker": {"$eq": ticker}},
+                    {"timestamp": {"$lt": cutoff_time}}
+                ]
+            }
+        )
+    except Exception as e:
+        print(f"⚠️ [Retention] Cleanup error for {ticker}: {e}")
+
+
+def process_news(data: dict) -> None:
+    """Process news, metrics, technicals and daily summaries for RAG."""
     try:
         title = data.get('title', "")
-        if not title: return
+        if not title:
+            return
 
         ticker = data.get('ticker', 'UNKNOWN')
         doc_type = data.get('type', 'news')
-        
-        # --- LOGIQUE ANTI-DOUBLON ---
+
         if doc_type == 'technical':
             unique_id = f"LATEST_TECH_{ticker}"
         elif doc_type == 'intraday_metrics':
             unique_id = f"LATEST_METRICS_{ticker}"
-        else: 
+        elif doc_type == 'daily_summary':
+            ts = int(data.get('publish_time', time.time()))
+            unique_id = f"DAILY_SUMMARY_{ticker}_{ts}"
+        else:
             raw_id = data.get('id')
             if not raw_id:
                 raw_id = str(hash(title))
             unique_id = f"NEWS_{ticker}_{raw_id}"
 
-        # ✅ AMÉLIORATION: Utiliser title + summary + content pour le sentiment
         text_for_sentiment = data.get('summary', title)
         if data.get('content'):
             text_for_sentiment = f"{title}. {data.get('content')}"
-            
+
         sentiment_scores = analyzer.polarity_scores(text_for_sentiment)
         sentiment = sentiment_scores['compound']
-        
-        # ✅ DEBUG: Afficher les scores VADER
-        print(f"DEBUG [{ticker}] Sentiment: {sentiment:.3f} | Scores: {sentiment_scores}")
-        
-        # Embedding sur le titre + ticker
+
         text_embed = f"{ticker}: {title}"
         vector = embedding_model.encode(text_embed).tolist()
-        
-        # Upsert
+
+        metadata_clean = clean_metadata(data, sentiment)
+
         collection.upsert(
             ids=[unique_id],
             embeddings=[vector],
             documents=[data.get('content', title)],
-            metadatas=[{
-                "ticker": ticker,
-                "timestamp": data.get('publish_time', 0),
-                "current_price": float(data['current_price']) if data.get('current_price') else 0.0,
-                "mean_200": float(data['mean_200']) if data.get('mean_200') else 0.0,
-                "mean_50": float(data['mean_50']) if data.get('mean_50') else 0.0,
-                "mean_10":  float(data['mean_10']) if data.get('mean_10') else 0.0,
-                "price_12h_ago": float(data['price_12h_ago']) if data.get('price_12h_ago') else 0.0,
-                "price_6h_ago": float(data['price_6h_ago']) if data.get('price_6h_ago') else 0.0,
-                "price_3h_ago": float(data['price_3h_ago']) if data.get('price_3h_ago') else 0.0,
-                "price_1h_ago": float(data['price_1h_ago']) if data.get('price_1h_ago') else 0.0,
-                "price_30min_ago": float(data['price_30min_ago']) if data.get('price_30min_ago') else 0.0,
-                "price_10min_ago": float(data['price_10min_ago']) if data.get('price_10min_ago') else 0.0,
-                "last_close": float(data['last_close']) if data.get('last_close') else 0.0,
-                "opening_price": float(data['opening_price']) if data.get('opening_price') else 0.0,
-                "content": data.get('summary', title),
-                "sentiment": sentiment,
-                "regularMarketTime": int(data.get('regularMarketTime', 0)),
-                "market_state": data.get('market_state', 'REGULAR'),
-                "currency": data.get('currency', 'UKN'),
-                "doc":  title,
-                "link": data.get('link', '#'),
-                "type": doc_type
-            }]
+            metadatas=[metadata_clean]
         )
-        print(f"✅ [RAG] Traité : {ticker} ({doc_type}) - Currency: {data.get('currency', 'UKN')} - Sentiment: {sentiment:.2f}")
+
+        log_msg = f"✅ [RAG] Processed: {ticker} ({doc_type})"
+
+        if doc_type == 'daily_summary':
+            enforce_retention_policy(ticker)
+            log_msg += " + Cleanup > 30 days done"
+
+        print(log_msg)
 
     except Exception as e:
-        print(f"❌ Erreur RAG ({ticker}): {e}")
+        print(f"❌ RAG Error ({ticker}): {e}")
+
 
 if __name__ == "__main__":
-    
-    # Initialize Consumer without strict deserializer to prevent crashes on bad bytes
+
     consumer = KafkaConsumer(
         KAFKA_TOPIC_NEWS,
         KAFKA_TOPIC_HISTORY,
         KAFKA_TOPIC_HOT_NEWS,
+        KAFKA_TOPIC_DAILY_SUMMARY,
         bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
         auto_offset_reset="earliest",
-        group_id="consumer-final-group-v3",
-        enable_auto_commit=True
+        group_id="consumer-rag-group-v5",
+        enable_auto_commit=True,
+        value_deserializer=lambda x: (json.loads(x.decode('utf-8'))
+                                      if x else None)
     )
 
-    print("[Consumer] Connected to Kafka. Listening...")
+    print(f"[Consumer] Connected to Kafka. Listening "
+          f"(Retention: {RETENTION_DAYS} days)...")
 
     for message in consumer:
         update_heartbeat()
-        
+
         try:
-            if message.value is None: continue
-            data = json.loads(message.value.decode("utf-8"))
-            
+            data = message.value
+            if data is None:
+                continue
+
             topic = message.topic
-            
+
             if topic == KAFKA_TOPIC_HISTORY:
                 process_history(data)
-            elif topic == KAFKA_TOPIC_NEWS:
+            elif topic in [KAFKA_TOPIC_NEWS, KAFKA_TOPIC_HOT_NEWS,
+                           KAFKA_TOPIC_DAILY_SUMMARY]:
                 process_news(data)
-            elif topic == KAFKA_TOPIC_HOT_NEWS:
-                process_news(data) # Hot news goes to RAG too
-                
+
         except json.JSONDecodeError:
             print(f"⚠️ [Consumer] JSON Error on topic {message.topic}")
         except Exception as e:

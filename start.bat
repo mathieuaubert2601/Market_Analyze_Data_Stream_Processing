@@ -22,11 +22,13 @@ echo.
 echo 📥 Lancement du Consumer...
 start "CONSUMER (dsp-project)" cmd /k "conda activate dsp-project && python src/processing/consumer.py"
 echo ⏳ Attente de l'initialisation (60 secondes)...
-timeout /t 60 /nobreak >nul
+
+
+::timeout /t 60 /nobreak >nul
 :: 4. Lancer l'App (Avec activation Conda)
-echo.
-echo 🌐 Lancement de Streamlit...
-start "STREAMLIT (dsp-project)" cmd /k "conda activate dsp-project && streamlit run src/app/main.py"
-echo.
-echo ✅ TOUT EST LANCÉ ! 
-echo.
+::echo.
+::echo 🌐 Lancement de Streamlit...
+::start "STREAMLIT (dsp-project)" cmd /k "conda activate dsp-project && streamlit run src/app/main.py"
+::echo.
+::echo ✅ TOUT EST LANCÉ ! 
+::echo.
