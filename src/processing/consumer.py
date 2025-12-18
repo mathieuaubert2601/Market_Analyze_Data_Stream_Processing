@@ -2,6 +2,7 @@ import json
 import sys
 import os
 import time
+import datetime
 import pandas as pd
 import chromadb
 from kafka import KafkaConsumer
@@ -144,7 +145,8 @@ def process_news(data: dict) -> None:
             unique_id = f"LATEST_METRICS_{ticker}"
         elif doc_type == 'daily_summary':
             ts = int(data.get('publish_time', time.time()))
-            unique_id = f"DAILY_SUMMARY_{ticker}_{ts}"
+            date_str = datetime.datetime.fromtimestamp(ts).strftime('%Y-%m-%d')
+            unique_id = f"DAILY_SUMMARY_{ticker}_{date_str}"
         else:
             raw_id = data.get('id')
             if not raw_id:

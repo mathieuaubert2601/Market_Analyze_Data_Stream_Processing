@@ -283,6 +283,7 @@ def get_answer(user_query: str):
             "mean_50": meta.get("mean_50"),
             "mean_200": meta.get("mean_200"),
             "currency": meta.get("currency", "EUR"),
+            "market_state": meta.get("market_state", "N/C"),
         }
 
         if meta.get("type") == "daily_summary":

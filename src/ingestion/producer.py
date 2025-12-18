@@ -262,7 +262,7 @@ def generate_intraday_metrics(stock: yf.Ticker,
                                 if len(df) > 3 else 0.0),
             "regularMarketTime": last_price_timestamp,
             "currency": currency,
-            "market_state": "ACTIVE",
+            "market_state": info.get('marketState', 'N/C'),
             "id": f"LATEST_METRICS_{ticker}"
         }
         return payload
@@ -324,7 +324,7 @@ def analyze_technicals_daily(ticker: str, hist: pd.DataFrame,
             "mean_50": float(ma_50),
             "mean_200": float(ma_200) if not pd.isna(ma_200) else 0.0,
             "regularMarketTime": last_price_timestamp,
-            "market_state": "ACTIVE",
+            "market_state": info.get('marketState', 'N/C'),
             "currency": currency,
             "id": f"LATEST_TECH_{ticker}"
         }

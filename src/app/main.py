@@ -324,7 +324,7 @@ with col2:
 
                 try:
                     market_state = s.get('market_state', 'UNKNOWN')
-                    if market_state == "REGULAR":
+                    if market_state != "CLOSED":
                         market_display = "🟢 OPEN"
                         market_color = "green"
                     else:
@@ -497,7 +497,7 @@ with col2:
                 relative_time = fmt_relative(s.get('timestamp'))
                 try:
                     market_state = s.get('market_state', 'CLOSED')
-                    if market_state == "REGULAR":
+                    if market_state != "CLOSED":
                         market_display = "🟢 OPEN"
                     else:
                         market_display = "🔴 CLOSED"
