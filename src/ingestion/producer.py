@@ -39,14 +39,16 @@ USER_AGENTS = [
 ]
 
 TICKER_MAPPING = {
-    "STLAP.PA": "Stellantis",
-    "STMPA.PA": "STMicroelectronics",
-    "ORA.PA": "Orange S.A.",
-    "ENGI.PA": "Engie",
-    "ALHPI.PA": "Hopium",
-    "CS.PA": "AXA Assurance",
-    "DCAM.PA": "AMUNDI PEA MONDE MSCI WORLD",
-    "ETZ.PA": "BNP Paribas Easy Stoxx Europe600",
+    "MC.PA": "LVMH Moët Hennessy",
+    "TTE.PA": "TotalEnergies",
+    "OR.PA": "L'Oréal Finance",
+    "RMS.PA": "Hermès International",
+    "SAN.PA": "Sanofi",
+    "SAF.PA": "Safran",
+    "SU.PA": "Schneider Electric",
+    "AI.PA": "Air Liquide",
+    "BNP.PA": "BNP Paribas",
+    "DG.PA": "Vinci Construction"
 }
 
 

@@ -12,8 +12,7 @@ KAFKA_TOPIC_DAILY_SUMMARY = "daily-summary"
 
 # --- ACTIONS ---
 TICKERS = [
-    "STLAP.PA", "STMPA.PA", "ORA.PA", "ENGI.PA",
-    "ALHPI.PA", "CS.PA", "DCAM.PA", "ETZ.PA",
+    "MC.PA","TTE.PA","OR.PA","RMS.PA","SAN.PA","SAF.PA","SU.PA","AI.PA","BNP.PA","DG.PA"
 ]
 
 # --- PARAMETERS ---
