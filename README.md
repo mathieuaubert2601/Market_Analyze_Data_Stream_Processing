@@ -2,108 +2,127 @@
 
 Description
 -----------
-Market_Analyze_Data_Stream_Processing est un projet Python destiné à ingérer, traiter et analyser des flux de données de marché (ticks, cotations, ordres, etc.). Le dépôt contient :
-- le code Python dans `src/` (producteurs, consommateurs, traitements),
-- un `docker-compose.yml` minimal pour lancer Kafka/Zookeeper localement,
-- un `requirements.txt` listant les dépendances Python,
-- un dossier `data/` pour exemples / jeux de données.
+Market_Analyze_Data_Stream_Processing is a Python project designed to ingest, process, and analyze market data streams (ticks, quotes, orders, etc.). The repository includes:
+- Python code in `src/` (producers, consumers, processing jobs)
+- a minimal `docker-compose.yml` to launch Kafka/Zookeeper locally
+- a `requirements.txt` listing Python dependencies
+- a `data/` folder for sample datasets
 
-Ce README explique comment configurer l'environnement, lancer l'infrastructure (Docker), exécuter les composants localement et tester le flux.
+This README explains how to set up the environment, launch the infrastructure (Docker), run components locally, and test the data flow.
 
-Table des matières
+Table of Contents
 ------------------
-- Prérequis
+- Prerequisites
 - Installation
 - Configuration (.env)
-- Lancer l'infrastructure (Docker Compose)
-- Exécuter localement les composants Python
-- Exemples rapides (producteur / consommateur)
-- Utilisation des dépendances importantes
-- Tests & développement
-- Dépannage
+- Launching Infrastructure (Docker Compose)
+- Running Python Components Locally
+- Quick Examples (Producer / Consumer)
+- Usage of Main Dependencies
+- Testing & Development
+- Troubleshooting
 - Contribution
-- Licence & contact
+- License & Contact
 
-Prérequis
----------
+Prerequisites
+-------------
 - Git
 - Python 3.8+
 - pip
-- Docker & Docker Compose (recommandé pour reproduire l'infrastructure)
-- (Optionnel) virtualenv / venv
+- Docker & Docker Compose (recommended for infrastructure)
+- (Optional) virtualenv / venv
 
 Installation
 ------------
-1. Cloner le dépôt
+1. Clone the repository:
+   ```bash
    git clone https://github.com/mathieuaubert2601/Market_Analyze_Data_Stream_Processing.git
    cd Market_Analyze_Data_Stream_Processing
+   ```
 
-2. (Optionnel) Créer et activer un environnement virtuel Python
-   - python3 -m venv .venv
-   - source .venv/bin/activate   # macOS / Linux
-   - .venv\Scripts\activate      # Windows (PowerShell)
+2. (Optional) Create and activate a Python virtual environment:
+   - macOS / Linux:
+     ```bash
+     python3 -m venv .venv
+     source .venv/bin/activate
+     ```
+   - Windows (PowerShell):
+     ```powershell
+     python -m venv .venv
+     .venv\Scripts\activate
+     ```
 
-3. Installer les dépendances
+3. Install dependencies:
+   ```bash
    pip install --upgrade pip
    pip install -r requirements.txt
+   ```
 
-Dépendances principales
------------------------
-Le fichier `requirements.txt` du dépôt contient, entre autres :
-- kafka-python — client Kafka en Python
-- yfinance — récupération de données de marché (Yahoo Finance)
-- chromadb — base de vecteurs locale
+Main Dependencies
+-----------------
+The `requirements.txt` includes, among others:
+- kafka-python — Kafka client for Python
+- yfinance — market data retrieval (Yahoo Finance)
+- chromadb — local vector database
 - sentence-transformers — embeddings
-- streamlit — UI rapide
-- groq — client pour Groq API (clé dans .env)
-- python-dotenv — chargement des variables d'environnement depuis .env
-- pandas, plotly — manipulation et visualisation
-- vaderSentiment — analyse de sentiment
-- watchdog — surveillance de fichiers
+- streamlit — rapid UI
+- groq — Groq API client (key in .env)
+- python-dotenv — environment variable loading from .env
+- pandas, plotly — data manipulation and visualization
+- vaderSentiment — sentiment analysis
+- watchdog — file monitoring
 
 Configuration (.env)
 --------------------
-Le projet utilise un fichier `.env` pour stocker des variables d'environnement. Un exemple minimal (NE PAS mettre de vraies clés dans le repo) :
+The project uses a `.env` file for environment variables. Minimal example (DO NOT commit real keys):
 
+```
 GROQ_API_KEY=your_groq_api_key_here
 KAFKA_BOOTSTRAP_SERVERS=localhost:9092
 KAFKA_TOPIC=market-ticks
+```
 
-Lancer l'infrastructure (Docker Compose)
-----------------------------------------
-Un `docker-compose.yml` est fourni et contient au minimum Zookeeper et Kafka (Confluent) exposant :
-- Zookeeper : 2181
-- Kafka : 9092
+Launching Infrastructure (Docker Compose)
+-----------------------------------------
+A `docker-compose.yml` is provided with at least Zookeeper and Kafka (Confluent), exposing:
+- Zookeeper: 2181
+- Kafka: 9092
 
-Démarrer les services :
-- docker compose up --build
+Start services:
+```bash
+docker compose up --build
+```
 
-Démarrer en arrière-plan :
-- docker compose up -d
+Start in background:
+```bash
+docker compose up -d
+```
 
-Voir les logs :
-- docker compose logs -f
+View logs:
+```bash
+docker compose logs -f
+```
 
-Arrêter et supprimer :
-- docker compose down
+Stop and remove:
+```bash
+docker compose down
+```
 
-Important :
-- Le `docker-compose.yml` configure `KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092`. Si vous exécutez depuis une VM ou un container différent, adaptez la valeur `KAFKA_ADVERTISED_LISTENERS` afin que vos clients Python puissent se connecter correctement.
+Important:
+- The `docker-compose.yml` sets `KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092`. If running from a VM or different container, adjust `KAFKA_ADVERTISED_LISTENERS` so Python clients can connect.
 
-Exécuter localement les composants Python
-----------------------------------------
-1. Vérifiez que Kafka est disponible (docker compose up) ou utilisez un broker Kafka externe.
-2. Installez les dépendances (voir Installation).
-3. Parcourez `src/` pour trouver les scripts d'entrée (producteurs, consommateurs, stream jobs). Les noms exacts des scripts peuvent varier ; si vous ne les trouvez pas, cherchez les README/entrypoints dans `src/`.
+Running Python Components Locally
+---------------------------------
+1. Ensure Kafka is available (`docker compose up`) or use an external Kafka broker.
+2. Install dependencies (see Installation).
+3. Browse `src/` for entry scripts (producers, consumers, stream jobs). Script names may vary; check for README/entrypoints in `src/` if needed.
 
-Commandes génériques :
-- python src/<nom_du_script>.py --help
-- python -m src.<package>    # si `src` est un package
+Usage of Main Dependencies
+--------------------------
+- yfinance: fetch historical/real-time market data (e.g., for backfill)
+- sentence-transformers + chromadb: build/index embeddings and perform semantic search
+- streamlit: launch a quick UI: `streamlit run path/to/app.py`
+- vaderSentiment: sentiment analysis on text (news, tweets)
+- watchdog: monitor directories/files to trigger automatic ingestion
 
-Utilisation des composants listés dans requirements
--------------------------------------------------
-- yfinance : récupération de données historiques/temps réel (ex. pour backfill).
-- sentence-transformers + chromadb : construire / indexer embeddings et faire des recherches sémantiques.
-- streamlit : lancer une interface rapide : streamlit run path/to/app.py
-- vaderSentiment : analyse de sentiment sur textes (news, tweets).
-- watchdog : surveiller des répertoires / fichiers pour déclencher ingestion automatique.
+---
