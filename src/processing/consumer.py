@@ -8,6 +8,7 @@ import chromadb
 from kafka import KafkaConsumer
 from sentence_transformers import SentenceTransformer
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+from deep_translator import GoogleTranslator
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 from src.config import (
@@ -156,8 +157,15 @@ def process_news(data: dict) -> None:
         text_for_sentiment = data.get('summary', title)
         if data.get('content'):
             text_for_sentiment = f"{title}. {data.get('content')}"
+        try:
+            translator = GoogleTranslator(source='auto', target='en')
+            text_en = translator.translate(text_for_sentiment)
 
-        sentiment_scores = analyzer.polarity_scores(text_for_sentiment)
+        except Exception as e:
+            print(f"⚠️ Traduction error: {e}")
+            text_en = text_for_sentiment
+            
+        sentiment_scores = analyzer.polarity_scores(text_en)
         sentiment = sentiment_scores['compound']
 
         text_embed = f"{ticker}: {title}"
@@ -172,7 +180,7 @@ def process_news(data: dict) -> None:
             metadatas=[metadata_clean]
         )
 
-        log_msg = f"✅ [RAG] Processed: {ticker} ({doc_type})"
+        log_msg = f"✅ [RAG] Processed: {ticker} ({doc_type}"
 
         if doc_type == 'daily_summary':
             enforce_retention_policy(ticker)

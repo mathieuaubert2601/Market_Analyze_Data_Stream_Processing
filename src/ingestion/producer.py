@@ -423,7 +423,7 @@ def fetch_and_send_data(producer: KafkaProducer, seen_news: set) -> None:
                             "publish_time": pub_ts,
                             "type": "news",
                             "source": "yahoo_api",
-                            "market_state": "ACTIVE",
+                            "market_state": stock.info.get('marketState', 'N/C'),
                             "currency": curr,
                             "id": news_id
                         }

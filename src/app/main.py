@@ -300,7 +300,7 @@ with col1:
 
             horizon_hours = round(horizon / 3600, 1)
             mode_label = (
-                "🔴 LIVE MODE" if horizon_hours < 4 else "📚 HISTORY MODE"
+                "🔴 LIVE MODE" if horizon_hours <= 24 else "📚 HISTORY MODE"
             )
             st.caption(
                 f"{mode_label} | Search Window: Last {horizon_hours} hours"
@@ -453,126 +453,37 @@ with col2:
                 with st.expander(f"{icon} {s['ticker']} ({date_str})"):
 
                     if s.get('opening_price') is not None:
+                        # 1. Préparation de l'affichage de la variation (Couleur + Flèche)
+                        var = s.get('variation_pct')
+                        if var is not None:
+                            color = "green" if var >= 0 else "red"
+                            icon = "▲" if var >= 0 else "▼"
+                            # Syntaxe Markdown Streamlit pour la couleur
+                            var_str = f":{color}[{icon} {var:.2f}%]"
+                        else:
+                            var_str = "N/A"
+
                         currency = s.get('currency', '')
+                        vol = human_format(s.get('volume'))
 
-                        c1, c2 = st.columns(2)
+                        # 2. Affichage compact en 3 colonnes x 2 lignes
+                        # On utilise st.markdown pour avoir un texte petit et formatté
+                        c1, c2, c3 = st.columns(3)
+
                         with c1:
-                            st.metric("Open", f"{fmt(s['opening_price'])}")
+                            st.markdown(f"**Open:** {fmt(s['opening_price'])}")
+                            st.markdown(f"**Close:** {fmt(s['closing_price'])}")
+                        
                         with c2:
-                            st.metric(
-                                "Close",
-                                f"{fmt(s['closing_price'])}",
-                                help=f"Currency: {currency}"
-                            )
+                            st.markdown(f"**High:** {fmt(s['high_price'])}")
+                            st.markdown(f"**Low:** {fmt(s['low_price'])}")
 
-                        st.divider()
-
-                        c3, c4 = st.columns(2)
                         with c3:
-                            st.metric("High", f"{fmt(s['high_price'])}")
-                        with c4:
-                            st.metric("Low", f"{fmt(s['low_price'])}")
-
-                        st.divider()
-
-                        c5, c6 = st.columns(2)
-                        with c5:
-                            vol = s.get('volume')
-                            st.metric("Volume", human_format(vol))
-
-                        with c6:
-                            var = s.get('variation_pct')
-                            if var is not None:
-                                st.metric("Var.", f"{var:.2f}%",
-                                          delta=f"{var:.2f}%")
-                            else:
-                                st.metric("Var.", "N/A")
+                            st.markdown(f"**Vol:** {vol}")
+                            st.markdown(f"**Var:** {var_str}")
 
                     else:
                         st.warning("⚠️ Incomplete data")
                         st.caption(s.get('title'))
-
-            elif s['type'] == 'intraday_metrics':
-                icon = "📊"
-                relative_time = fmt_relative(s.get('timestamp'))
-                try:
-                    market_state = s.get('market_state', 'CLOSED')
-                    if market_state != "CLOSED":
-                        market_display = "🟢 OPEN"
-                    else:
-                        market_display = "🔴 CLOSED"
-                except Exception:
-                    market_display = "❓ UNKNOWN"
-
-                with st.expander(
-                    f"{icon} {s['ticker']} - Intraday Metrics "
-                    f"({relative_time})"
-                ):
-                    st.caption(
-                        f"📅 {s['date']} - Market: {market_display}"
-                    )
-
-                    if s.get('regularMarketTime') and s['regularMarketTime'] != 0:
-                        try:
-                            dt = datetime.datetime.fromtimestamp(
-                                s['regularMarketTime']
-                            )
-                            last_price_date = dt.strftime(
-                                "%A %d/%m/%Y %H:%M"
-                            )
-                            st.caption(
-                                f"Last Price Update: {last_price_date}"
-                            )
-                        except Exception:
-                            pass
-
-                    current_price = s.get('current_price')
-                    currency = s.get('currency', 'EUR')
-
-                    if current_price and current_price != 0:
-                        st.markdown(
-                            f"**Momentum Analysis {s['ticker']} "
-                            f"(Price: {float(current_price):.2f} "
-                            f"{currency})**"
-                        )
-                    else:
-                        st.markdown(
-                            f"**Momentum Analysis {s['ticker']}**"
-                        )
-
-                    variations_data = [
-                        ("10min", s.get('price_10min_ago')),
-                        ("30min", s.get('price_30min_ago')),
-                        ("1h", s.get('price_1h_ago')),
-                        ("3h", s.get('price_3h_ago')),
-                        ("6h", s.get('price_6h_ago')),
-                    ]
-
-                    has_variations = False
-                    for label, past_price in variations_data:
-                        if (past_price and past_price != 0 and
-                                current_price and current_price != 0):
-                            var_pct = (
-                                (float(current_price) - float(past_price)) /
-                                float(past_price)
-                            ) * 100
-
-                            color_var = "green" if var_pct >= 0 else "red"
-                            icon_var = "▲" if var_pct >= 0 else "▼"
-
-                            st.markdown(
-                                f"- {label}: :{color_var}"
-                                f"[{icon_var} {var_pct:.2f}%]"
-                            )
-                            has_variations = True
-
-                    if not has_variations:
-                        st.caption("⏳ Variations not available")
-
-                    if s.get('link') and s['link'] != "#":
-                        st.markdown(f"[📖 View details]({s['link']})")
-
-            else:
-                st.info("📌 Sources will appear here after analysis.")
     else:
         st.info("📌 Sources will appear here after analysis.")
