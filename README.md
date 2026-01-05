@@ -2,6 +2,8 @@
 
 A real-time **Financial Market Analysis System** powered by **Apache Kafka**, **RAG (Retrieval-Augmented Generation)**, and **LLM** (Llama 3.3 70B via Groq). This project ingests live market data, financial news, and technical indicators, then provides AI-powered insights through an interactive Streamlit dashboard.
 
+Acces to the streamlit live of our application (the data are those published on the github, there is no update because streamlit live do not allow to run kafka) https://marketanalyzedatastreamprocessing-2gecwcwivwcr54mfuqrjmh.streamlit.app/
+
 ---
 
 ## 📑 Table of Contents
@@ -488,3 +490,4 @@ python -c "import chromadb; c=chromadb.PersistentClient('./data/chromadb'); prin
 | `watchdog` | File monitoring |
 
 ---
+
